@@ -503,9 +503,28 @@ def _provision():
     # chat paste-aways.
     link_dir = args.link_dir
     link_path = os.path.join(link_dir, gs.link_file_name(container_name))
+    # Directory policy (p2 review): chmod ONLY what this run created. A
+    # pre-existing --link-dir must already be private; silently tightening
+    # (or being silently opened up by) somebody else's directory -- /tmp,
+    # a home dir -- is the worse bug. Pre-existing dirs must be mode 07xx
+    # AND owned by us, or we refuse and tell the operator the exact fix.
     try:
-        os.makedirs(link_dir, mode=0o700, exist_ok=True)
-        os.chmod(link_dir, 0o700)  # deterministic even if the dir pre-existed
+        os.makedirs(link_dir, mode=0o700)
+        os.chmod(link_dir, 0o700)  # ours; mkdir's mode is ANDed with umask
+    except FileExistsError:
+        if not os.path.isdir(link_dir):
+            raise ProvisionAborted(
+                f"--link-dir {link_dir} exists and is not a directory"
+            )
+        st = os.stat(link_dir)
+        if (st.st_mode & 0o077) or st.st_uid != os.getuid():
+            raise ProvisionAborted(
+                f"--link-dir {link_dir} is not private (mode "
+                f"{oct(st.st_mode & 0o777)}, uid {st.st_uid}, expected mode "
+                "07xx and your uid); run chmod 700 on it yourself -- this "
+                "tool never chmods a directory it did not create"
+            )
+    try:
         fd = os.open(link_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     except OSError as exc:
         # O_EXCL also ENOTDIR/EEXIST-honest: a pre-existing file is NEVER

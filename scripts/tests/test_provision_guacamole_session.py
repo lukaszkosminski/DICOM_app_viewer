@@ -507,6 +507,7 @@ def test_link_file_write_refuses_to_overwrite_and_rolls_back(
     # undo-ordering fix, never DELETED by the rollback either.
     provision._UNDO.clear()
     isolated_link_dir.mkdir(parents=True, exist_ok=True)
+    os.chmod(isolated_link_dir, 0o700)  # pass the pre-existing-dir privacy check
     pre = isolated_link_dir / "guac-STU_PRE-1.link"
     pre.write_text("PRE-EXISTING DO NOT CLOBBER")
     monkeypatch.setattr(
@@ -564,7 +565,7 @@ def test_link_write_oserror_rolls_back_and_never_prints_the_link(
             provision.main()
     assert stop.value.code == 1
     captured = capsys.readouterr()
-    assert "could not write session link file" in captured.err
+    assert "exists and is not a directory" in captured.err
     # no credential fallback printing, stdout OR stderr:
     assert "password=" not in captured.out + captured.err
     assert "#/?username=" not in captured.out + captured.err
@@ -576,6 +577,33 @@ def test_link_write_oserror_rolls_back_and_never_prints_the_link(
         and c[3].startswith("guac-weasis-STU_WF-")
     ]
     assert rm_calls, "this run's container must have been removed"
+
+
+def test_preexisting_public_link_dir_is_refused_and_untouched(
+    mock_docker_run, monkeypatch, capsys, isolated_link_dir
+):
+    # p2 review: never chmod a directory this run did not create.
+    provision._UNDO.clear()
+    isolated_link_dir.mkdir(parents=True, mode=0o755)
+    monkeypatch.setattr(
+        sys, "argv", ["provision-guacamole-session.py", "--student-id", "STU_PUB"]
+    )
+    seen = []
+
+    def spy(req, timeout=15):
+        seen.append(req.full_url)
+        return _fake_urlopen(req, timeout=timeout)
+
+    with patch.object(urllib.request, "urlopen", side_effect=spy):
+        with pytest.raises(SystemExit) as stop:
+            provision.main()
+    assert stop.value.code == 1
+    err = capsys.readouterr().err
+    assert "is not private" in err and "chmod 700" in err
+    assert oct(os.stat(isolated_link_dir).st_mode & 0o777) == "0o755"  # unchanged
+    # the half-built session was still rolled back:
+    assert any(c[:3] == ["docker", "rm", "-f"] for c in mock_docker_run)
+    assert any("/api/session/revoke" in u for u in seen)
 
 
 def test_teardown_step_deletes_the_link_file(tmp_path):
