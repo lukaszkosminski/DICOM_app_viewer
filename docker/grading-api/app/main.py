@@ -660,21 +660,19 @@ def reset(body: ResetBody):
         conn.close()
 
 
-_STAGE_ORDER = "CASE s.stage WHEN 'learning' THEN 0 WHEN 'assessment' THEN 1 ELSE 2 END"
-
-
 def _answer_rows(conn, student_id: str):
     """All of the student's submissions, ordered learning -> assessment -> test and by case
     position. Reads the frozen snapshot columns (issue #96) plus the case row the submission
     points at (case_id is the exact version row, which is frozen once answered)."""
     return conn.execute(
-        f"""SELECT s.stage, s.submitted_category, s.submitted_modifier_s, s.submitted_text,
+        """SELECT s.stage, s.submitted_category, s.submitted_modifier_s, s.submitted_text,
                    s.is_correct, s.ground_truth_category, s.ground_truth_modifier_s,
                    c.order_index, c.title, c.reference_report,
                    c.ground_truth_category AS case_category, c.ground_truth_modifier_s AS case_modifier_s
             FROM submissions s JOIN cases c ON c.id = s.case_id
             WHERE s.student_id = ?
-            ORDER BY {_STAGE_ORDER}, c.order_index""",
+            ORDER BY CASE s.stage WHEN 'learning' THEN 0 WHEN 'assessment' THEN 1 ELSE 2 END,
+                     c.order_index""",
         (student_id,),
     ).fetchall()
 
