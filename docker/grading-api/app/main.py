@@ -35,7 +35,7 @@ import uuid
 from contextlib import asynccontextmanager
 from typing import Literal, Optional
 
-from fastapi import FastAPI, Header, Request
+from fastapi import FastAPI, Header, Request, Response
 from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel, Field
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -703,3 +703,59 @@ def results(x_grading_token: str | None = Header(default=None, alias="X-Grading-
         }
     finally:
         conn.close()
+
+
+# ---- SPIKE (issue #195, item 1): per-session scoping of the Orthanc proxy -----------
+# nginx (:8043) calls this through auth_request before forwarding any /s/<key>/... request
+# to Orthanc. <key> is sha256(grading token) in hex: one-way, so a key that leaks through
+# an nginx error log (which prints the request line) does NOT reveal the grading token and
+# cannot be used for /submit; it only lets the holder READ the session's current study.
+import hashlib  # noqa: E402
+
+_KEY_PATH_RE = re.compile(r"^/s/([0-9a-f]{64})(/dicom-web/[^?]*)?(?:\?(.*))?$")
+_UID = r"[0-9]+(?:\.[0-9]+)*"
+
+
+def _study_path_re(uid: str):
+    u = re.escape(uid)
+    return re.compile(
+        rf"^/dicom-web/studies/{u}"
+        rf"(?:/(?:series|metadata|thumbnail|rendered)"
+        rf"(?:/{_UID}(?:/(?:metadata|thumbnail|rendered|instances(?:/{_UID}(?:/(?:metadata|thumbnail|rendered|frames/[0-9,]+))?)?))?)?)?$"
+    )
+
+
+@app.get("/orthanc-authz")
+def orthanc_authz(x_original_uri: str | None = Header(default=None, alias="X-Original-URI")):
+    """204 = allow, 401 = unknown/expired key, 403 = not this session's current study."""
+    m = _KEY_PATH_RE.match(x_original_uri or "")
+    if not m:
+        raise AppError(403, "AUTHZ_BAD_PATH", "Not a scoped Orthanc path")
+    key, path, query = m.group(1), m.group(2) or "", m.group(3) or ""
+    conn = db.get_connection()
+    try:
+        student_id = None
+        for row in conn.execute("SELECT token, student_id FROM sessions WHERE expires_at >= ?", (db.now(),)):
+            if hashlib.sha256(row["token"].encode()).hexdigest() == key:
+                student_id = row["student_id"]
+                break
+        if student_id is None:
+            raise AppError(401, "AUTHZ_INVALID_KEY", "Unknown or expired key")
+        progress = _get_or_create_progress(conn, student_id)
+        if progress["stage"] == "complete":
+            raise AppError(403, "AUTHZ_NO_STUDY", "No study assigned")
+        case = _get_case(conn, progress["stage"], progress["case_order_index"])
+        if case is None:
+            raise AppError(403, "AUTHZ_NO_STUDY", "No study assigned")
+        uid = case["orthanc_study_uid"]
+    finally:
+        conn.close()
+    if path == "/dicom-web/studies":
+        # QIDO search: only a query that names THIS study and nothing broader.
+        params = dict(p.split("=", 1) for p in query.split("&") if "=" in p)
+        if params.get("StudyInstanceUID") != uid and params.get("0020000D") != uid:
+            raise AppError(403, "AUTHZ_FORBIDDEN", "Search must name the assigned study")
+        return Response(status_code=204)
+    if _study_path_re(uid).match(path):
+        return Response(status_code=204)
+    raise AppError(403, "AUTHZ_FORBIDDEN", "Path is outside the assigned study")
