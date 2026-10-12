@@ -67,10 +67,21 @@ def _fake_urlopen(req, timeout=15):
     if url.endswith("/api/tokens"):
         return _FakeResponse({"authToken": "fake-admin-token"})
     if "/connections?token=" in url:
+        if req.method == "GET":
+            # rollback's by-name delete lists first: empty directory
+            return _FakeResponse({})
         return _FakeResponse({"identifier": "42"})
     # users create/delete, permissions grant -- none of these need a
     # meaningful body, main() never reads their return value.
     return _FakeResponse({})
+
+
+@pytest.fixture(autouse=True)
+def isolated_link_dir(tmp_path, monkeypatch):
+    """#191: main() now WRITES 0600 link files -- keep every test off the
+    real repo local/ dir."""
+    monkeypatch.setenv("GUACAMOLE_LINK_DIR", str(tmp_path / "links"))
+    return tmp_path / "links"
 
 
 @pytest.fixture
@@ -461,3 +472,126 @@ def test_bad_lifetime_aborts_before_any_side_effect(mock_docker_run, monkeypatch
     # the abort happened BEFORE the token mint and before any docker call:
     assert seen == []
     assert mock_docker_run == []
+
+
+# ---------------------------------------------------------------------------
+# #191 CodeQL fix: the credential arrives ONLY as a 0600 file; stdout is
+# non-secret; a failed write rolls the whole provision back.
+# ---------------------------------------------------------------------------
+
+def test_link_file_is_0600_dir_0700_and_stdout_names_only_the_path(
+    mock_docker_run, monkeypatch, capsys, isolated_link_dir
+):
+    provision._UNDO.clear()
+    monkeypatch.setattr(sys, "argv", ["provision-guacamole-session.py", "--student-id", "STU_LK"])
+    with patch.object(urllib.request, "urlopen", side_effect=_fake_urlopen):
+        provision.main()
+    payload = json.loads(capsys.readouterr().out)
+    path = payload["link_file"]
+    assert oct(os.stat(isolated_link_dir).st_mode & 0o777) == "0o700"
+    assert oct(os.stat(path).st_mode & 0o777) == "0o600" if False else oct(os.stat(path).st_mode & 0o777) == "0o600"
+    content = open(path).read()
+    assert content.startswith("http://localhost:8090/guacamole/#/?username=stu_STU_LK&password=")
+    # and the secret itself never reached stdout/stderr:
+    secret = content.split("password=", 1)[1].strip()
+    captured = capsys.readouterr()
+    assert secret not in captured.out and secret not in captured.err
+    assert "link" not in payload or payload["link"] == path
+    assert "link_file" in payload and "link" not in payload
+
+
+def test_link_file_write_refuses_to_overwrite_and_rolls_back(
+    mock_docker_run, monkeypatch, capsys, isolated_link_dir
+):
+    # O_EXCL promise: a pre-existing file is never clobbered -- and, by the
+    # undo-ordering fix, never DELETED by the rollback either.
+    provision._UNDO.clear()
+    isolated_link_dir.mkdir(parents=True, exist_ok=True)
+    pre = isolated_link_dir / "guac-STU_PRE-1.link"
+    pre.write_text("PRE-EXISTING DO NOT CLOBBER")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "provision-guacamole-session.py",
+            "--student-id",
+            "STU_PRE",
+            "--session-id",
+            "1",
+        ],
+    )
+    seen = []
+
+    def spy(req, timeout=15):
+        seen.append(req.full_url)
+        return _fake_urlopen(req, timeout=timeout)
+
+    with patch.object(urllib.request, "urlopen", side_effect=spy):
+        with pytest.raises(SystemExit) as stop:
+            provision.main()
+    assert stop.value.code == 1
+    assert pre.read_text() == "PRE-EXISTING DO NOT CLOBBER"
+    err = capsys.readouterr().err
+    assert "could not write session link file" in err
+    # rollback order: ... container rm, then the token undo's OWN
+    # sibling-check (`docker ps -a`) is the final call -- assert presence,
+    # not position.
+    assert ["docker", "rm", "-f", "guac-weasis-STU_PRE-1"] in mock_docker_run
+    assert any("/api/session/revoke" in u for u in seen)  # token undid
+
+
+def test_link_write_oserror_rolls_back_and_never_prints_the_link(
+    mock_docker_run, monkeypatch, capsys, tmp_path
+):
+    # Make the link dir UNWRITABLE at the makedirs/chmod stage by pointing
+    # --link-dir AT an existing plain file (no global os.open patching).
+    provision._UNDO.clear()
+    blocker = tmp_path / "blocker"
+    blocker.write_text("i am a file, not a dir")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "provision-guacamole-session.py",
+            "--student-id",
+            "STU_WF",
+            "--link-dir",
+            str(blocker),
+        ],
+    )
+    with patch.object(urllib.request, "urlopen", side_effect=_fake_urlopen):
+        with pytest.raises(SystemExit) as stop:
+            provision.main()
+    assert stop.value.code == 1
+    captured = capsys.readouterr()
+    assert "could not write session link file" in captured.err
+    # no credential fallback printing, stdout OR stderr:
+    assert "password=" not in captured.out + captured.err
+    assert "#/?username=" not in captured.out + captured.err
+    assert captured.out == ""  # stdout JSON never emitted on abort
+    rm_calls = [
+        c
+        for c in mock_docker_run
+        if c[:3] == ["docker", "rm", "-f"]
+        and c[3].startswith("guac-weasis-STU_WF-")
+    ]
+    assert rm_calls, "this run's container must have been removed"
+
+
+def test_teardown_step_deletes_the_link_file(tmp_path):
+    """Library contract used by BOTH CLIs: teardown removes the file."""
+    import guacamole_session as gs
+
+    link_dir = tmp_path / "links"
+    link_dir.mkdir()
+    name = gs.link_file_name("guac-weasis-STU_TD-9")
+    f = link_dir / name
+    f.write_text("secret link\n")
+    assert gs.remove_link_file(str(link_dir), "guac-weasis-STU_TD-9") is True
+    assert not f.exists()
+    # idempotent: second removal is a benign no-op
+    assert gs.remove_link_file(str(link_dir), "guac-weasis-STU_TD-9") is False
+    # namespace guard: the name comes only from the container, never a path
+    import pytest as _p
+    with _p.raises(gs.NamespaceViolation):
+        gs.link_file_name("guac-weasis-bad/../etc-passwd-1")

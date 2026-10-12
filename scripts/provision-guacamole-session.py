@@ -27,7 +27,9 @@ version-compatibility-guaranteed). This script does both jobs itself:
      link per student is a real per-student username/password pair with
      Guacamole's documented URL-parameter auto-login
      (#/?username=...&password=...).
-  4. Prints the ready-to-open link.
+  4. Writes the ready-to-open link to a 0600 file (NEVER prints it; the
+     stdout JSON carries the link_file path instead -- CodeQL fix owned
+     by #191).
 
 Requires:
   GRADING_COORDINATOR_KEY  -- same secret create-session.py uses
@@ -42,17 +44,23 @@ Requires:
                               override if your project name differs --
                               check with `docker network ls`)
   GUACAMOLE_WEASIS_IMAGE   -- default ipcmc/guacamole-weasis:poc
+  GUACAMOLE_USER_VALID_HOURS -- default 48; day-grained account backstop
+  GUACAMOLE_LINK_DIR       -- default local/session-links (or --link-dir)
 
 Usage:
   GRADING_COORDINATOR_KEY=... python3 scripts/provision-guacamole-session.py --student-id STU_12345
 
-SECURITY: stdout is a LIVE CREDENTIAL -- the emitted link embeds this
-session's auto-login password. Hand it to exactly one student; never tee
-it, commit it or paste it into tickets/transcripts (the 2022-09-22
-incident lesson recorded in create-session.py applies; what differs is
-SCOPE: this secret is born with the session and dies with it via
-rollback/teardown/reaper, unlike the long-lived key that leaked then).
-Operator-facing guidance ships in docs/GUACAMOLE.md (#183).
+SECURITY: the auto-login link is NEVER printed. It is written to a file
+created with O_CREAT|O_EXCL and mode 0600 (refuses to overwrite anything)
+inside --link-dir / $GUACAMOLE_LINK_DIR (default local/session-links,
+created 0700, git-ignored via local/*). Operator flow: `cat` the printed
+link_file path, hand the ONE line to exactly one student, then delete the
+file -- teardown-guacamole-session.py and the reaper delete it for you
+when the session ends. A leaked link file is still single-session scoped
+(rollback/teardown/reaper end the session; valid-until ends the account),
+which is the difference from the long-lived key of the 2022-09-22
+incident recorded in create-session.py. Guidance ships in
+docs/GUACAMOLE.md (#183).
 
 Companion teardown script: scripts/teardown-guacamole-session.py
 """
@@ -254,6 +262,13 @@ def _provision():
     parser = argparse.ArgumentParser()
     parser.add_argument("--student-id", required=True)
     parser.add_argument("--session-id", default=None, help="defaults to a timestamp")
+    parser.add_argument(
+        "--link-dir",
+        default=os.environ.get("GUACAMOLE_LINK_DIR") or gs.DEFAULT_LINK_DIR,
+        help="directory for 0600 session-link files (created 0700 when missing); "
+        "default $GUACAMOLE_LINK_DIR or local/session-links. Operator: cat the "
+        "printed link_file, hand it to ONE student, delete afterwards.",
+    )
     args = parser.parse_args()
 
     guac_url = os.environ.get("GUACAMOLE_URL", "http://localhost:8090/guacamole/")
@@ -480,11 +495,41 @@ def _provision():
 
     link = f"{guac_url}#/?username={urllib.parse.quote(guac_username)}&password={urllib.parse.quote(guac_password)}"
 
-    # This link is the deliverable AND a live credential: it embeds this
-    # session's auto-login secret, which disappears the moment the session
-    # does (rollback here, teardown/reaper otherwise, or its TTL). Operator
-    # handling rules live in the module docstring; do not pipe stdout into
-    # logs, tickets, or commits.
+    # #191 CodeQL fix, owner directive: the credential travels ONLY as a
+    # 0600 file (O_EXCL: never overwrite; owner-fixed modes; the link dir
+    # lives under git-ignored local/*). A failed write aborts and rolls
+    # back the WHOLE provision -- there is deliberately no fallback that
+    # prints the link, because stdout goes to shell history, CI logs and
+    # chat paste-aways.
+    link_dir = args.link_dir
+    link_path = os.path.join(link_dir, gs.link_file_name(container_name))
+    try:
+        os.makedirs(link_dir, mode=0o700, exist_ok=True)
+        os.chmod(link_dir, 0o700)  # deterministic even if the dir pre-existed
+        fd = os.open(link_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except OSError as exc:
+        # O_EXCL also ENOTDIR/EEXIST-honest: a pre-existing file is NEVER
+        # clobbered, and no undo is registered because we created nothing.
+        raise ProvisionAborted(
+            f"could not write session link file {link_path}: {exc}"
+        ) from None
+    # Undo registered only AFTER os.open succeeded: it may delete nothing
+    # but the file THIS run created (a rollback must not eat an unrelated
+    # pre-existing file -- caught by the overwrite test).
+    _UNDO.append(
+        (f"link file {link_path}", lambda: gs.remove_link_file(link_dir, container_name))
+    )
+    try:
+        with os.fdopen(fd, "w") as fh:
+            fh.write(link + "\n")
+    except OSError as exc:
+        raise ProvisionAborted(
+            f"could not finish writing session link file {link_path}: {exc}"
+        ) from None
+
+    # stdout is NON-SECRET BY DESIGN (CodeQL alert fixed in code, not
+    # dismissed): everything needed to FETCH the credential, minus the
+    # credential itself. Never add the link back into this payload.
     print(
         json.dumps(
             {
@@ -497,7 +542,7 @@ def _provision():
                 # requested-lifetime moment -- see parse_valid_until.
                 "account_valid_until": valid_until_date,
                 "account_expires_at": f"{valid_until_date}T23:59:59Z",
-                "link": link,
+                "link_file": link_path,
             },
             indent=2,
         )
