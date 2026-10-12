@@ -78,3 +78,24 @@ def test_no_probe_carries_a_password_on_its_command_line(core, guacamole):
         for name, svc in services.items():
             probe = json.dumps(svc.get("healthcheck", {}).get("test", []))
             assert SENTINEL not in probe, name
+
+
+# ---- grading-db ownership (follow-up to issue #51) ----------------------------------------
+
+
+def test_the_data_volume_is_made_writable_before_grading_api_starts(core):
+    deps = core["grading-api"]["depends_on"]
+    assert deps["grading-db-init"]["condition"] == "service_completed_successfully"
+    init = core["grading-db-init"]
+    assert init["command"] == ["chown", "-R", "10001:10001", "/data"]
+    assert "grading-db" in json.dumps(init["volumes"])
+
+
+def test_the_init_service_is_as_small_as_a_root_container_can_be(core):
+    init = core["grading-db-init"]
+    assert init["user"] == "0:0" and init["read_only"] is True
+    assert init["network_mode"] == "none"
+    assert init["cap_drop"] == ["ALL"] and init["cap_add"] == ["CHOWN"]
+    assert "no-new-privileges:true" in init["security_opt"]
+    assert init.get("restart", "no") == "no"
+    assert "@sha256:" in init["image"]  # pinned like every other external image (lint gate)
