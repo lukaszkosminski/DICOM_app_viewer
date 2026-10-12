@@ -133,6 +133,25 @@ server {
     # Orthanc's REST API design (it takes a JSON query body) despite being
     # a pure read, used for the study/series list and the filtered-studies
     # view's own StudyInstanceUID lookup.
+    # SPIKE #195: scoped read access. /s/<key>/dicom-web/... is authorised per request by
+    # grading-api (auth_request) and then forwarded WITHOUT the /s/<key> prefix.
+    location ~ "^/s/[0-9a-f]{64}/dicom-web/" {
+        limit_except GET HEAD {
+            deny all;
+        }
+        auth_request /_authz;
+        rewrite "^/s/[0-9a-f]{64}(/.*)$" $1 break;
+        proxy_pass http://orthanc:8042;
+    }
+    location = /_authz {
+        internal;
+        proxy_pass http://grading-api:8000/orthanc-authz;
+        proxy_pass_request_body off;
+        proxy_set_header Content-Length "";
+        proxy_set_header X-Original-URI $request_uri;
+        proxy_set_header Authorization "";
+    }
+
     location = /tools/find {
         limit_except POST {
             deny all;

@@ -37,7 +37,9 @@ REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", 
 @pytest.fixture
 def provisioned_session():
     student_id = f"E2E_TEST_{int(time.time())}"
-    session_id = "e2e"
+    # session id must be digits-only (provisioner enforces the guard's
+    # \d{1,20} shape; the old literal "e2e" is now refused up front).
+    session_id = str(int(time.time()))
     result = subprocess.run(
         [
             sys.executable,
@@ -59,10 +61,19 @@ def provisioned_session():
             ],
             capture_output=True, text=True, env=os.environ.copy(), check=False,
         )
+        # the 0600 credential file must not linger after the e2e run
+        # (teardown already removes it when the configured link dir
+        # matches; this covers link dirs the fixture ran with)
+        link_file = data.get("link_file")
+        if link_file and os.path.exists(link_file):
+            os.remove(link_file)
 
 
 def test_auto_login_link_reaches_the_client_with_no_login_form(provisioned_session):
-    link = provisioned_session["link"]
+    # #191: the link lives in the 0600 file provision stdout named, never
+    # in stdout itself.
+    with open(provisioned_session["link_file"], encoding="utf-8") as fh:
+        link = fh.read().strip()
     with sync_playwright() as p:
         browser = p.chromium.launch()
         try:
@@ -89,7 +100,8 @@ def test_connection_renders_real_display_data(provisioned_session):
     real, correctly-rendered Weasis session (visually confirmed via a
     saved screenshot during development showing the assigned CT_small
     study rendered correctly, not just a non-blank canvas)."""
-    link = provisioned_session["link"]
+    with open(provisioned_session["link_file"], encoding="utf-8") as fh:
+        link = fh.read().strip()
     with sync_playwright() as p:
         browser = p.chromium.launch()
         try:

@@ -1,4 +1,6 @@
-FROM nginx:1.29-alpine
+# Base image pinned by tag AND digest (issue #105): the tag says what it is, the digest
+# makes the build repeatable. To update see docs/REPRODUCIBLE_BUILDS.md.
+FROM nginx:1.29-alpine@sha256:5616878291a2eed594aee8db4dade5878cf7edcb475e59193904b198d9b830de
 
 # Pulls current Alpine security patches at build time -- the base image tag
 # itself only gets rebuilt on nginx's own release cadence, so OS packages in

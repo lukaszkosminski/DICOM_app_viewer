@@ -27,6 +27,7 @@ and retryable).
 """
 
 import json
+import os
 import re
 import subprocess
 import urllib.error
@@ -312,6 +313,39 @@ def revoke_token_for_student(opener, grading_api_url, coordinator_key, student_i
 # --------------------------------------------------------------------------
 
 
+# --------------------------------------------------------------------------
+# Session-link files (#191 CodeQL fix): the auto-login link is written to a
+# 0600 file, NEVER printed. Name is derived from the CONTAINER name, so the
+# same namespace guard that protects containers protects the file.
+# --------------------------------------------------------------------------
+
+DEFAULT_LINK_DIR = os.path.join("local", "session-links")
+LINK_PREFIX = "guac-"
+LINK_SUFFIX = ".link"
+
+
+def link_file_name(container_name):
+    """guac-<student>-<session>.link -- both parts re-validated through
+    parse_container_name, so a crafted name can never escape the link dir."""
+    student_id, session_id = parse_container_name(container_name)
+    return f"{LINK_PREFIX}{student_id}-{session_id}{LINK_SUFFIX}"
+
+
+def remove_link_file(link_dir, container_name):
+    """Delete the link file if present. -> True removed, False was-absent
+    (idempotent). Raises NamespaceViolation on any name that does not
+    resolve to the exact expected file INSIDE link_dir."""
+    name = link_file_name(container_name)
+    path = os.path.join(link_dir, name)
+    if os.path.dirname(path) != os.path.normpath(link_dir):
+        raise NamespaceViolation(f"link path escaped {link_dir}: {path}")
+    try:
+        os.remove(path)
+        return True
+    except FileNotFoundError:
+        return False
+
+
 def teardown_session(
     container_name,
     *,
@@ -322,6 +356,7 @@ def teardown_session(
     admin_pass,
     grading_api_url=None,
     coordinator_key=None,
+    link_dir=None,
     verbose=False,
 ):
     """Destroy EVERYTHING belonging to one session: container, guacamole
@@ -406,5 +441,15 @@ def teardown_session(
                 opener, grading_api_url, coordinator_key, student_id
             ),
         )
+
+    if link_dir:
+        # The credential file must not outlive the session (#191 CodeQL fix
+        # owner directive). Absent file is fine: links may never have been
+        # written by an older provisioner version.
+        try:
+            remove_link_file(link_dir, container_name)
+            report["link_file"] = STEP_OK
+        except Exception as exc:  # noqa: BLE001 - consistent with other steps
+            report["link_file"] = f"{type(exc).__name__}: {exc}"
 
     return report
