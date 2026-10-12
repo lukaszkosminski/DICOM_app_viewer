@@ -68,12 +68,13 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from datetime import datetime, timedelta, timezone
 
 # issue #182: rollback shares ONE naming/shape truth with the reaper and
 # teardown (merged in #187) -- a half-provisioned session must be undoable
 # by exactly the code that reaps fully-provisioned ones.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import guacamole_session as gs  # noqa: E402
+import guacamole_session as gs
 
 # issue #52: a narrow custom seccomp profile, not blanket
 # `seccomp=unconfined` -- see docker/guacamole-weasis/seccomp/
@@ -99,6 +100,54 @@ class ProvisionAborted(Exception):
 # start, drain on abort, clear without running after success -- a live
 # session must never be undone).
 _UNDO = []
+
+
+# User account expiry (#191 owner directive), VERIFIED against the
+# guacamole-client tag 1.6.0 sources (p2 cross-checked the same files):
+#   extensions/guacamole-auth-jdbc/modules/guacamole-auth-jdbc-base/
+#     src/main/java/org/apache/guacamole/auth/jdbc/user/ModeledUser.java
+#     lines 71-101 (attribute names), 122-123 (they are DateFields)
+#   guacamole-ext/src/main/java/org/apache/guacamole/form/DateField.java:36
+#     (DateField.FORMAT)
+# Facts: the JDBC directory's attribute names are "valid-from"/"valid-until"
+# -- NO "guac-" prefix (the old guac-* names belonged to the pre-1.x core
+# GuacUser surface) -- the value format is DATE ONLY ("yyyy-MM-dd",
+# day-grained), and per ModeledUser/UserModel javadoc the account stays
+# usable until MIDNIGHT OF THE DAY AFTER valid-until. Consequences owned in
+# the docs: this is a day-level BACKSTOP, not an hours-precise lifetime
+# (valid-until is the DATE of the now+lifetime moment and the account
+# lives until 23:59:59.999 of that day, so account-side expiry can trail
+# the request by up to ~24 h); the reaper (#181) remains the hard limit. "timezone" is set
+# to UTC so Guacamole's day-boundary comparisons are deterministic
+# server-side regardless of DB/host TZ. "valid-from" is deliberately NOT
+# set: accounts should be usable immediately.
+DEFAULT_USER_VALID_HOURS = 48.0  # matches the reaper's DEFAULT_MAX_AGE_HOURS
+MAX_USER_VALID_HOURS = 24 * 365  # a 1-year account is already absurd here
+
+
+def parse_valid_until(lifetime_hours, now=None):
+    """-> (valid_until_date_str, ends_moment_iso).
+
+    valid-until is the DATE of the expiry moment (now + lifetime); the
+    account stays usable until 23:59:59.999 of that day in the user's
+    timezone (pinned UTC here), per ModeledUser -- so the account-side
+    expiry can trail the requested lifetime by up to ~24 h, and stdout
+    must show the ACCOUNT truth, not the requested moment.
+
+    Raises ValueError on anything a sane operator did not mean:
+    non-numeric, NaN, non-positive, above MAX_USER_VALID_HOURS; raises
+    OverflowError (caught by the caller) for magnitudes timedelta cannot
+    represent, e.g. float('inf')."""
+    hours = float(lifetime_hours)  # 'inf' -> float ok; timedelta below overflows
+    if not (hours > 0):  # also catches NaN (NaN > 0 is False)
+        raise ValueError(f"lifetime must be > 0 hours, got {lifetime_hours!r}")
+    if hours > MAX_USER_VALID_HOURS:
+        raise ValueError(
+            f"lifetime {hours!r} h exceeds the {MAX_USER_VALID_HOURS} h cap"
+            " (longer-lived access belongs in provisioning, not a user row)"
+        )
+    moment = (now or datetime.now(timezone.utc)) + timedelta(hours=hours)
+    return moment.date().isoformat(), moment.isoformat(timespec="seconds")
 
 
 def _rollback(reason):
@@ -219,6 +268,20 @@ def _provision():
 
     student_id = args.student_id
     session_id = args.session_id or str(int(time.time()))
+
+    # Validated FIRST: an unusable lifetime must abort before the token
+    # mint, so there is nothing to roll back (and the CLI exits 1 with a
+    # clear message via main()'s ProvisionAborted path).
+    raw_valid_hours = os.environ.get("GUACAMOLE_USER_VALID_HOURS", "") or str(
+        DEFAULT_USER_VALID_HOURS
+    )
+    try:
+        valid_until_date, _requested_ends = parse_valid_until(raw_valid_hours)
+    except (ValueError, OverflowError) as exc:
+        raise ProvisionAborted(
+            f"GUACAMOLE_USER_VALID_HOURS: {exc} (Guacamole account expiry is"
+            " day-grained; the reaper is the hour-grained limit)"
+        ) from None
 
     # 1. grading-api token -- identical mechanism to create-session.py.
     session_created = api_call(
@@ -346,7 +409,11 @@ def _provision():
     api_call(
         "POST",
         f"{guac_url}api/session/data/postgresql/users?token={admin_token}",
-        data={"username": guac_username, "password": guac_password, "attributes": {}},
+        data={
+            "username": guac_username,
+            "password": guac_password,
+            "attributes": {"valid-until": valid_until_date, "timezone": "UTC"},
+        },
         headers={"Content-Type": "application/json"},
         label="Guacamole (create user)",
     )
@@ -426,6 +493,10 @@ def _provision():
                 "container_name": container_name,
                 "guacamole_username": guac_username,
                 "connection_id": connection_id,
+                # ACCOUNT truth (what Guacamole actually enforces), not the
+                # requested-lifetime moment -- see parse_valid_until.
+                "account_valid_until": valid_until_date,
+                "account_expires_at": f"{valid_until_date}T23:59:59Z",
                 "link": link,
             },
             indent=2,

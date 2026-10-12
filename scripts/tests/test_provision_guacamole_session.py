@@ -358,3 +358,106 @@ def test_api_error_text_redacts_admin_token_and_echoed_secrets(capsys):
     err = capsys.readouterr().err
     assert admin_token not in err
     assert vnc_secret not in err
+
+
+# ---------------------------------------------------------------------------
+# #191 owner directive: per-student Guacamole accounts must expire.
+# Verified against guacamole-client tag 1.6.0 (see provisioner's comment):
+# JDBC attribute names are "valid-until"/"valid-from" (NO guac- prefix),
+# DateField.FORMAT = "yyyy-MM-dd" (date only), validity ends at midnight
+# AFTER the given day. The env var is in HOURS; day granularity is the
+# documented consequence, the reaper stays the hard limit.
+# ---------------------------------------------------------------------------
+
+def test_parse_valid_until_date_semantics_and_rejection():
+    from datetime import datetime, timezone
+
+    now = datetime(2026, 10, 12, 23, 30, tzinfo=timezone.utc)
+    date_str, requested = provision.parse_valid_until(2, now=now)
+    # p2 review: valid-until is the DATE of the expiry moment; the account
+    # lives until 23:59:59.999 of that day -- NOT a "ceil" of anything.
+    assert date_str == "2026-10-13"  # moment crosses midnight -> next day
+    assert requested == "2026-10-13T01:30:00+00:00"
+    for bad in ("0", "-3", "abc", "nan", "NaN", "inf", "-inf", "1e12", "9000"):
+        with pytest.raises((ValueError, OverflowError)):
+            provision.parse_valid_until(bad, now=now)
+
+
+def test_stdout_shows_account_truth_not_requested_moment(
+    mock_docker_run, monkeypatch, capsys
+):
+    provision._UNDO.clear()
+    monkeypatch.setenv("GUACAMOLE_USER_VALID_HOURS", "36")
+    monkeypatch.setattr(sys, "argv", ["provision-guacamole-session.py", "--student-id", "STU_OUT"])
+    with patch.object(urllib.request, "urlopen", side_effect=_fake_urlopen):
+        provision.main()
+    payload = json.loads(capsys.readouterr().out)
+    date_str, requested = provision.parse_valid_until(36)
+    assert payload["account_valid_until"] == date_str
+    assert payload["account_expires_at"] == f"{date_str}T23:59:59Z"
+    # the misleading exact-lifetime moment stays out of operator output
+    assert "expires_at" not in payload
+    assert requested not in json.dumps(payload)
+
+
+def test_user_create_payload_carries_expiry_attributes(mock_docker_run, monkeypatch):
+    provision._UNDO.clear()
+    monkeypatch.setenv("GUACAMOLE_USER_VALID_HOURS", "36")
+    monkeypatch.setattr(sys, "argv", ["provision-guacamole-session.py", "--student-id", "STU_EXP"])
+    bodies = []
+    real_urlopen = _fake_urlopen
+
+    def spy(req, timeout=15):
+        if req.data:
+            try:
+                bodies.append(json.loads(req.data.decode()))
+            except (ValueError, UnicodeDecodeError):
+                pass  # form-encoded login body; not what this test probes
+        return real_urlopen(req, timeout=timeout)
+
+    with patch.object(urllib.request, "urlopen", side_effect=spy):
+        provision.main()
+    user_bodies = [
+        d
+        for d in bodies
+        if isinstance(d, dict) and d.get("username", "").startswith("stu_")
+    ]
+    assert len(user_bodies) == 1
+    attrs = user_bodies[0]["attributes"]
+    assert attrs["timezone"] == "UTC"
+    expected_date, _ = provision.parse_valid_until(36)
+    assert attrs["valid-until"] == expected_date
+
+
+def test_empty_lifetime_env_falls_back_to_default(mock_docker_run, monkeypatch):
+    provision._UNDO.clear()
+    monkeypatch.setenv("GUACAMOLE_USER_VALID_HOURS", "")
+    monkeypatch.setattr(sys, "argv", ["provision-guacamole-session.py", "--student-id", "STU_DEF"])
+    with patch.object(urllib.request, "urlopen", side_effect=_fake_urlopen):
+        provision.main()  # must NOT abort: empty means "use the default"
+    expected_default, _ = provision.parse_valid_until(
+        provision.DEFAULT_USER_VALID_HOURS
+    )
+    assert expected_default == provision.parse_valid_until("48")[0]
+
+
+@pytest.mark.parametrize("bad", ["0", "-3", "abc", "inf", "nan", "1e12", "9000"])
+def test_bad_lifetime_aborts_before_any_side_effect(mock_docker_run, monkeypatch, capsys, bad):
+    provision._UNDO.clear()
+    monkeypatch.setenv("GUACAMOLE_USER_VALID_HOURS", bad)
+    monkeypatch.setattr(sys, "argv", ["provision-guacamole-session.py", "--student-id", "STU_ZERO"])
+    seen = []
+
+    def spy(req, timeout=15):
+        seen.append(req.full_url)
+        return _fake_urlopen(req, timeout=timeout)
+
+    with patch.object(urllib.request, "urlopen", side_effect=spy):
+        with pytest.raises(SystemExit) as stop:
+            provision.main()
+    assert stop.value.code == 1
+    err = capsys.readouterr().err
+    assert "GUACAMOLE_USER_VALID_HOURS" in err
+    # the abort happened BEFORE the token mint and before any docker call:
+    assert seen == []
+    assert mock_docker_run == []
