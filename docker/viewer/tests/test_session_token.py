@@ -82,7 +82,8 @@ def stored_token(page):
 
 
 def finish_flow(page):
-    """learning -> assessment -> test -> results (the stack's default cases)."""
+    """learning -> assessment -> test -> the end-of-exam review (the stack's default cases);
+    the doctor then approves it (issue #202) to reach the results."""
     page.fill("#text-input", "Odpowiedź testowa.")
     page.click("#submit-btn")
     page.wait_for_selector("#next-btn", timeout=15000)
@@ -93,7 +94,7 @@ def finish_flow(page):
         page.click("#submit-btn")
         page.wait_for_selector("#next-btn", timeout=15000)
         page.click("#next-btn")
-    page.wait_for_selector("#restart-btn", timeout=15000)
+    page.wait_for_selector("#approve-btn", timeout=15000)
 
 
 def test_reload_keeps_the_session(page, base_url, flow_page, student):
@@ -110,11 +111,19 @@ def test_reload_keeps_the_session(page, base_url, flow_page, student):
     assert not rec.errors
 
 
-def test_reload_on_the_results_screen_keeps_the_results(page, base_url, flow_page, student):
+def test_reload_on_the_review_and_results_screens_keeps_the_session(page, base_url, flow_page, student):
+    """Issue #145 + #202: after the last case the doctor is on the review screen; a reload keeps
+    them there (token survives), and after approval a reload goes straight to the results."""
     rec = Recorder(page)
     token = mint(student)
     open_page(page, base_url, flow_page, student, token)
     finish_flow(page)
+    page.wait_for_selector("#approve-btn", timeout=15000)
+    page.reload()
+    page.wait_for_selector("#approve-btn", timeout=15000)
+    assert page.locator("#session-expired").count() == 0
+    page.click("#approve-btn")
+    page.wait_for_selector("#restart-btn", timeout=15000)
     page.reload()
     page.wait_for_selector("#restart-btn", timeout=15000)
     assert page.locator("#session-expired").count() == 0

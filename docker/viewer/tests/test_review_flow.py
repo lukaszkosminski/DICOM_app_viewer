@@ -112,12 +112,12 @@ def test_long_learning_answers_are_shortened_and_expandable(page, base_url, path
 
 @pytest.mark.parametrize("path", PAGES)
 def test_approval_reveals_the_correct_answers_and_the_score(page, base_url, path):
-    api = Api(page)
+    api = Api(page, n=2)  # two cases per stage: one right, one wrong
     _open(page, base_url, path)
     page.click("#approve-btn")
     page.wait_for_selector("#restart-btn")
     text = page.inner_text("#grading-panel")
-    assert "Wyniki końcowe" in text and "Wynik testu: 0 / 1" in text
+    assert "Wyniki końcowe" in text and "Wynik testu: 0 / 2" in text
     assert "Kategoria referencyjna" in text and "Niepoprawnie" in text and "Poprawnie" in text
     assert "finalize" in api.calls
     assert page.locator("#grading-panel strong.lr").count() >= 2

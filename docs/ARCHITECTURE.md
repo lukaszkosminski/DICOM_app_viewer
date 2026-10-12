@@ -55,8 +55,12 @@ sequenceDiagram
     end
 
     Note over Student,GradingAPI: Repeats per case until each stage's case(s) are exhausted
-    Student->>Nginx: After all 3 stages: views results
-    Nginx->>GradingAPI: GET /api/results
+    Student->>Nginx: After all 3 stages: review of own answers
+    Nginx->>GradingAPI: GET /api/review (own answers only, no ground truth)
+    Student->>Nginx: "Zatwierdź i zakończ"
+    Nginx->>GradingAPI: POST /api/finalize (once, idempotent)
+    Student->>Nginx: views the correct answers and the score
+    Nginx->>GradingAPI: GET /api/results (only after finalize)
     Student->>Nginx: Optional: "Rozpocznij od początku"
     Nginx->>GradingAPI: POST /api/reset
 ```
