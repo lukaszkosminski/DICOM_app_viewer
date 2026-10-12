@@ -47,6 +47,9 @@
   }
   .answer-box.reference { background:#1a2a1f; border-color:#3a5a40; }
   .answer-box p { margin:0; white-space:pre-wrap; }
+  /* issue #201 (radiologist's request): the Lung-RADS scale is shown in bold -- the category
+     choices, the reference category, and category mentions inside the reference report. */
+  #grading-panel select, #grading-panel select option, #grading-panel strong.lr { font-weight:700; }
 
   /* Same DOM-text (not canvas) watermark as watermark.html, unchanged --
      see that file's comment for why: mix-blend-mode:difference for
@@ -213,6 +216,19 @@
     return div.innerHTML;
   }
 
+  // issue #201: bold the Lung-RADS category mentions in a piece of text.
+  // INPUT MUST ALREADY BE escapeHtml()-ed: the only markup this adds is
+  // <strong class="lr">, so nothing in a report (or any data) can inject HTML.
+  // Matches "Lung-RADS 4A", "Lung-RADS kategoria 3", "LR-4B", "LR 2S" and the
+  // Polish "kategoria/kategorii/kategorie/kategorię 4A" (category 0-3, 4A, 4B, 4X, optional S).
+  // The real reports' exact wording is not known to the developers (they are never
+  // opened), so the pattern is deliberately one constant: extend it from the
+  // owner's feedback, do not scatter variants.
+  const LUNG_RADS_MENTION = /\b((?:Lung-?RADS|Lung-?Rads|LR)[\s-]*(?:[Kk]ategori[aięy]\s*)?(?:[0-3]|4[ABX])(?:\s?S)?|[Kk]ategori[aięy]\s+(?:[0-3]|4[ABX])(?:\s?S)?)(?![0-9A-Za-z])/g;
+  function boldLungRads(escaped) {
+    return escaped.replace(LUNG_RADS_MENTION, '<strong class="lr">$1</strong>');
+  }
+
   // issue #99: exception-/server-derived strings are never interpolated
   // into an innerHTML template again -- showError builds the node through
   // the DOM API and writes the message via textContent, so even a value
@@ -363,12 +379,12 @@
       html = `<h3>Twoja ocena</h3>
         <div class="answer-box"><p>${escapeHtml(submitted.text)}</p></div>
         <h3>Opis referencyjny (prawdziwa diagnoza)</h3>
-        <div class="answer-box reference"><p>${escapeHtml(result.reference_report)}</p></div>`;
+        <div class="answer-box reference"><p>${boldLungRads(escapeHtml(result.reference_report))}</p></div>`;
     } else if (stage === "assessment") {
       const cls = result.correct ? "feedback-correct" : "feedback-incorrect";
       const label = result.correct ? "Poprawnie" : "Niepoprawnie";
       html = `<h3 class="${cls}">${label}</h3>
-        <p>Kategoria referencyjna: ${escapeHtml(result.ground_truth_category)}${result.ground_truth_modifier_s ? " (S)" : ""}</p>`;
+        <p>Kategoria referencyjna: <strong class="lr">${escapeHtml(result.ground_truth_category)}${result.ground_truth_modifier_s ? " (S)" : ""}</strong></p>`;
     } else {
       html = `<h3>Odpowiedź zapisana.</h3><p>Brak informacji zwrotnej w module testowym.</p>`;
     }
