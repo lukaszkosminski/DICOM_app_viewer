@@ -819,9 +819,13 @@ Then mint a per-student link:
 GRADING_COORDINATOR_KEY=$(grep GRADING_COORDINATOR_KEY .env | cut -d= -f2) \
   python3 scripts/provision-guacamole-session.py --student-id STU_12345
 ```
-and tear it down once finished:
+The stdout JSON is non-secret; the auto-login link itself is written to
+a 0600 file whose path appears as `link_file` (default dir
+`local/session-links`). `cat` it, hand it to exactly one student, delete
+it after (`cat`, one student, `rm`). Tear the session down once finished
+(the session id is the `session_id` field of that JSON; digits only):
 ```bash
-python3 scripts/teardown-guacamole-session.py --student-id STU_12345 --session-id <from the link>
+python3 scripts/teardown-guacamole-session.py --student-id STU_12345 --session-id <session_id>
 ```
 
 ### Confirmed working, via real tests, not assumed
@@ -1162,8 +1166,8 @@ scripts/load-sample-studies.sh        uploads sample-data/ (recursively) into Or
 scripts/create-session.py             mints a per-student Kasm session link (tested against a live instance)
 scripts/mint-local-link.sh            mints a grading-api token for the no-Kasm Quick Start (localhost:8080/... needs a token now, not just student_id)
 scripts/guacamole-iac.sh              brings up the whole Guacamole PoC stack from scratch
-scripts/provision-guacamole-session.py mints a per-student Guacamole session link (Kasm-free flow)
-scripts/teardown-guacamole-session.py tears down a Guacamole session (container + Guacamole user/connection)
+scripts/provision-guacamole-session.py mints a per-student Guacamole session link, written to a 0600 file, never printed (Kasm-free flow)
+scripts/teardown-guacamole-session.py tears down a Guacamole session (container + Guacamole user/connection + link file)
 scripts/lint.sh                       stage 1, Lint & Format: bash syntax + compose config + ruff (CI)
 scripts/build-test.sh                 stage 2, Build Test: builds every image in the repo (CI)
 scripts/security-scan.sh              stage 3, Security Scan: bandit + shellcheck + hadolint + trivy (CI)

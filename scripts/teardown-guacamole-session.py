@@ -47,6 +47,7 @@ def main():
     admin_pass = os.environ.get("GUACAMOLE_ADMIN_PASSWORD", "guacadmin")
     grading_api_url = os.environ.get("GRADING_API_URL", "")
     coordinator_key = os.environ.get("GRADING_COORDINATOR_KEY", "")
+    link_dir = os.environ.get("GUACAMOLE_LINK_DIR") or gs_mod.DEFAULT_LINK_DIR
 
     try:
         print(f"Tearing down {container_name} ...")
@@ -57,6 +58,7 @@ def main():
             admin_pass=admin_pass,
             grading_api_url=grading_api_url or None,
             coordinator_key=coordinator_key or None,
+            link_dir=link_dir,
             verbose=True,
         )
     except NamespaceViolation as exc:
