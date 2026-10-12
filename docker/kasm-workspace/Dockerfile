@@ -16,7 +16,9 @@
 # (docker/kasm-workspace-weasis/, kasmweb/core-ubuntu-noble:1.19.0) is the
 # target. The version difference between the two images is an accepted,
 # documented exception, not drift to be "fixed" by bumping this one.
-FROM kasmweb/chrome:1.16.0
+# Base image pinned by tag AND digest (issue #105): the tag says what it is, the digest
+# makes the build repeatable. To update see docs/REPRODUCIBLE_BUILDS.md.
+FROM kasmweb/chrome:1.16.0@sha256:2cd8a277420207135903ef3315f763d1ed943679330baa78b017d43257da1b4b
 
 USER root
 

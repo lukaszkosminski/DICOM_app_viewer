@@ -62,6 +62,31 @@ if [ "$orthanc_main" != "$orthanc_remote" ]; then
 fi
 [ "$pin_ok" -eq 1 ] || status=1
 
+echo "--- reproducible builds (issue #105): digest-pinned base images + hashed lockfile ---"
+# Every FROM in docker/*/Dockerfile must carry @sha256:<64 hex>. Update procedure:
+# docs/REPRODUCIBLE_BUILDS.md.
+repro_ok=1
+for df in docker/*/Dockerfile; do
+  while IFS= read -r line; do
+    case "$line" in
+      *"@sha256:"*) ;;
+      *) echo "UNPINNED base image in $df (needs name:tag@sha256:<digest>): $line" >&2; repro_ok=0 ;;
+    esac
+  done < <(grep -E '^FROM[[:space:]]' "$df")
+done
+# requirements.lock must contain every direct dependency of requirements.txt at the same
+# version, with hashes, and the Dockerfile must install it with --require-hashes.
+while IFS= read -r req; do
+  case "$req" in ""|"#"*) continue ;; esac
+  if ! grep -qE "^${req//./\\.}[[:space:]]+\\\\$" docker/grading-api/requirements.lock; then
+    echo "requirements.lock does not pin '$req' with hashes -- regenerate it (docs/REPRODUCIBLE_BUILDS.md)" >&2
+    repro_ok=0
+  fi
+done < docker/grading-api/requirements.txt
+grep -q -- '--require-hashes' docker/grading-api/Dockerfile || { echo "grading-api Dockerfile must install with --require-hashes" >&2; repro_ok=0; }
+grep -qE '^[[:space:]]*RUN.*apt-get[[:space:]]+(dist-)?upgrade' docker/grading-api/Dockerfile && { echo "grading-api Dockerfile must not run apt-get upgrade (issue #105)" >&2; repro_ok=0; }
+[ "$repro_ok" -eq 1 ] || status=1
+
 echo "--- Weasis pin sync (issue #50): both Dockerfiles must carry the same version + sha256 ---"
 weasis_pin() { grep -hE '^ARG WEASIS_(VERSION|SHA256)=' "$1" | sort; }
 kasm_pin="$(weasis_pin docker/kasm-workspace-weasis/Dockerfile)"
