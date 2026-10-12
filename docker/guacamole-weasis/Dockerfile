@@ -39,7 +39,7 @@ RUN apt-get update && \
       tightvncpasswd \
       openbox \
       dbus-x11 \
-      epiphany-browser \
+      gir1.2-webkit2-4.1 \
       desktop-file-utils \
       xdg-utils \
       libgtk-3-0 \
@@ -50,6 +50,9 @@ RUN apt-get update && \
       python3-gi-cairo \
       gir1.2-gtk-3.0 \
       picom \
+      wmctrl \
+      x11-utils \
+      x11-xserver-utils \
       curl \
       ca-certificates \
       fonts-dejavu-core && \
@@ -121,6 +124,13 @@ ENV HOME=/home/student
 # (scripts/guacamole-iac.sh, build-test.sh and test-guacamole-integration.sh do).
 COPY --from=kasm overlay.py watchdog.sh picom.conf /opt/watermark/
 RUN chmod +x /opt/watermark/watchdog.sh
+
+# Issue #180: window layout + panel relaunch + Weasis-follows-the-case-pointer
+# (#185) are the Kasm image's arrange_windows.sh, reused the same way, together
+# with the shared weasis:// URI helper. wmctrl/xprop/xrandr (installed above)
+# are what it needs; openbox is EWMH-compliant, so they work as under xfwm4.
+COPY --from=kasm arrange_windows.sh weasis_case_uri.py grading_panel_window.py /opt/grading-panel/
+RUN chmod +x /opt/grading-panel/arrange_windows.sh
 
 COPY xstartup /home/student/.vnc/xstartup
 COPY launch-session.sh /opt/startup/launch-session.sh

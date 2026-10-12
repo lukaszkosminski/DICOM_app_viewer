@@ -2,7 +2,7 @@
 # Tests for launch-session.sh (the Guacamole flow's launcher). Same
 # stubbing technique as docker/kasm-workspace-weasis/custom_startup.bats
 # -- no real grading-api, Weasis, or browser needed: WEASIS_BIN/
-# BROWSER_BIN (test-only seams this script added specifically for this,
+# GRADING_PANEL_CMD (test-only seams this script added specifically for this,
 # unset in production) point at stubs that capture their own argv
 # instead of actually launching anything, and a stub `curl` stands in for
 # grading-api's /api/case response. The real python3 still runs for the
@@ -21,12 +21,20 @@ for arg in "$@"; do printf '%s\n' "$arg" >> "$WEASIS_ARGS_FILE"; done
 EOF
   chmod +x "$STUB_DIR/weasis"
 
-  cat > "$STUB_DIR/browser" <<'EOF'
+  # The panel is a command that reads its settings from the environment (the token
+  # never goes on a command line); the stub records them.
+  cat > "$STUB_DIR/panel" <<'EOF'
 #!/usr/bin/env bash
-: > "$BROWSER_ARGS_FILE"
-for arg in "$@"; do printf '%s\n' "$arg" >> "$BROWSER_ARGS_FILE"; done
+{
+  echo "args=$*"
+  echo "VIEWER_URL=$VIEWER_URL"
+  echo "STUDENT_ID=$STUDENT_ID"
+  echo "SESSION_ID=$SESSION_ID"
+  echo "WIDTH=$GRADING_PANEL_WIDTH"
+  echo "GRADING_TOKEN=$GRADING_TOKEN"
+} > "$PANEL_ENV_FILE"
 EOF
-  chmod +x "$STUB_DIR/browser"
+  chmod +x "$STUB_DIR/panel"
 
   cat > "$STUB_DIR/curl" <<'EOF'
 #!/usr/bin/env bash
@@ -40,10 +48,11 @@ EOF
   chmod +x "$STUB_DIR/curl"
 
   export PATH="$STUB_DIR:$PATH"
+  export WEASIS_URI_HELPER="$BATS_TEST_DIRNAME/../kasm-workspace-weasis/weasis_case_uri.py"
   export WEASIS_BIN="$STUB_DIR/weasis"
-  export BROWSER_BIN="$STUB_DIR/browser"
+  export GRADING_PANEL_CMD="$STUB_DIR/panel"
   export WEASIS_ARGS_FILE="$BATS_TEST_TMPDIR/weasis-args.txt"
-  export BROWSER_ARGS_FILE="$BATS_TEST_TMPDIR/browser-args.txt"
+  export PANEL_ENV_FILE="$BATS_TEST_TMPDIR/panel-env.txt"
   export CURL_ARGS_FILE="$BATS_TEST_TMPDIR/curl-args.txt"
   export CURL_STDIN_FILE="$BATS_TEST_TMPDIR/curl-stdin.txt"
   export VIEWER_URL="http://ipcmc-viewer:8080/"
@@ -128,24 +137,24 @@ print(' '.join(urllib.parse.unquote(p) for p in uri.split('+')))
   [ "$(wc -c < "$COUNTER")" -eq 3 ]
 }
 
-@test "opens the grading panel with student_id/session_id/token, correctly percent-encoded" {
-  export STUDENT_ID="stu 1"  # deliberately needs encoding (space)
-  export SESSION_ID="sess_1"
-  export CURL_RESPONSE_JSON='{"complete": true}'
+@test "issue #180: the grading panel gets student, session, viewer URL, width and token through the ENVIRONMENT" {
+  export STUDENT_ID="stu 1" SESSION_ID="sess_1" CURL_RESPONSE_JSON='{"complete": true}'
   run bash "$SCRIPT"
   [ "$status" -eq 0 ]
-  # The browser is launched backgrounded (before the script's own final
-  # exec into the weasis stub), so its stub's file write races the
-  # foreground process rather than being strictly ordered before `run`
-  # returns -- poll briefly instead of assuming it's already there.
-  for _ in 1 2 3 4 5 6 7 8 9 10; do
-    [ -s "$BROWSER_ARGS_FILE" ] && break
-    sleep 0.1
-  done
-  url=$(cat "$BROWSER_ARGS_FILE")
-  # issue #94: the token sits in the URL FRAGMENT (#token=...) -- the
-  # browser never transmits fragments, so it can't reach nginx logs.
-  [[ "$url" == "http://ipcmc-viewer:8080/grading-panel.html?student_id=stu%201&session_id=sess_1#token=test-token-abc" ]]
+  # backgrounded, so its stub's file write races the foreground script: poll briefly
+  for _ in $(seq 1 30); do [ -s "$PANEL_ENV_FILE" ] && break; sleep 0.1; done
+  grep -qx "VIEWER_URL=http://ipcmc-viewer:8080/" "$PANEL_ENV_FILE"
+  grep -qx "STUDENT_ID=stu 1" "$PANEL_ENV_FILE"
+  grep -qx "SESSION_ID=sess_1" "$PANEL_ENV_FILE"
+  grep -qx "WIDTH=420" "$PANEL_ENV_FILE"
+  grep -qx "GRADING_TOKEN=test-token-abc" "$PANEL_ENV_FILE"
+}
+
+@test "issue #180: the token is not on the panel's command line (issue #94: no token in argv or the URL)" {
+  export CURL_RESPONSE_JSON='{"complete": true}'
+  run bash "$SCRIPT"
+  for _ in $(seq 1 30); do [ -s "$PANEL_ENV_FILE" ] && break; sleep 0.1; done
+  grep -qx "args=" "$PANEL_ENV_FILE"
 }
 
 @test "issue #94 CR: refuses to launch when GRADING_TOKEN leaves the URL-safe alphabet" {
@@ -212,4 +221,58 @@ STUB
   run bash "$SCRIPT"
   [[ "$output" == *"picom not available"* ]]
   wait_for_file "$WM_ENV_FILE"
+}
+
+# ---- issue #180: window layout, panel relaunch, case following (arrange_windows.sh) ---
+arrange_stub() {
+  export ARRANGE_ENV_FILE="$BATS_TEST_TMPDIR/arrange-env.txt"
+  cat > "$STUB_DIR/arrange_windows.sh" <<'STUB'
+#!/usr/bin/env bash
+{
+  echo "WEASIS_URI=$ARRANGE_WEASIS_URI"
+  echo "WEASIS_BIN=$ARRANGE_WEASIS_BIN"
+  echo "STUDENT=$STUDENT_ID VIEWER=$VIEWER_URL ORTHANC=$ORTHANC_URL"
+  echo "HAS_TOKEN=$([ -n "$GRADING_TOKEN" ] && echo yes || echo no)"
+} > "$ARRANGE_ENV_FILE"
+STUB
+  chmod +x "$STUB_DIR/arrange_windows.sh"
+  export ARRANGE_SCRIPT="$STUB_DIR/arrange_windows.sh"
+}
+
+@test "issue #180: the window loop gets the study URI and the API settings" {
+  arrange_stub
+  export STUDENT_ID="STU_7" SESSION_ID="s1"
+  export CURL_RESPONSE_JSON='{"orthanc_study_uid":"1.2.840.1"}'
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  wait_for_file "$ARRANGE_ENV_FILE"
+  grep -q "^WEASIS_URI=weasis://" "$ARRANGE_ENV_FILE"
+  grep -q "^WEASIS_BIN=$WEASIS_BIN$" "$ARRANGE_ENV_FILE"
+  grep -q "STUDENT=STU_7 VIEWER=http://ipcmc-viewer:8080/ ORTHANC=http://ipcmc-viewer:8043/" "$ARRANGE_ENV_FILE"
+  grep -q "^HAS_TOKEN=yes$" "$ARRANGE_ENV_FILE"
+}
+
+@test "issue #180: the window loop gets an EMPTY study URI when the case is complete (a plain Weasis is relaunched)" {
+  arrange_stub
+  export CURL_RESPONSE_JSON='{"complete": true}'
+  run bash "$SCRIPT"
+  wait_for_file "$ARRANGE_ENV_FILE"
+  grep -q "^WEASIS_URI=$" "$ARRANGE_ENV_FILE"
+}
+
+@test "issue #180: a missing window-loop script is reported loudly and the session still starts" {
+  export ARRANGE_SCRIPT="$BATS_TEST_TMPDIR/nope.sh" CURL_RESPONSE_JSON='{"complete": true}'
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"windows will not be tiled or relaunched"* ]]
+}
+
+@test "issue #180: the window loop gets the token only through its environment" {
+  arrange_stub
+  export CURL_RESPONSE_JSON='{"complete": true}'
+  run bash "$SCRIPT"
+  wait_for_file "$ARRANGE_ENV_FILE"
+  # passed through the environment only; the stub records just whether it is set
+  grep -qx "HAS_TOKEN=yes" "$ARRANGE_ENV_FILE"
+  ! grep -q "test-token-abc" "$ARRANGE_ENV_FILE"
 }

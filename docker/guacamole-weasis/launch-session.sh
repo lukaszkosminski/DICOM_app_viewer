@@ -1,12 +1,11 @@
 #!/usr/bin/env bash
 # Guacamole-flow equivalent of docker/kasm-workspace-weasis/custom_startup.sh.
 # Hosting-focused per the owner's decision of 2026-10-09: no Weasis
-# export/import lockdown and (until issue #180) no window auto-tiling.
-# The forensic watermark IS started here since issue #179 (mandatory).
-# Fetches the assigned case, launches Weasis on it, plus a plain browser
-# tab for the grading panel. Do not point this at
-# real patient data; see docker-compose.guacamole.yml's own header
-# comment.
+# export/import lockdown. The forensic watermark is started here (issue #179,
+# mandatory) and the windows are tiled and kept alive (issue #180). Fetches the
+# assigned case, launches Weasis on it, plus the Kasm flow's grading panel window.
+# Do not point this at real patient data; see docker-compose.guacamole.yml's own
+# header comment.
 #
 # The case-fetch + weasis:// URI construction below is copied verbatim
 # from docker/kasm-workspace-weasis/custom_startup.sh -- that logic (which
@@ -59,49 +58,13 @@ if [ "$api_ok" != "1" ]; then
   echo "launch-session: ERROR grading-api unreachable at ${VIEWER_URL} after ${API_ATTEMPTS} attempts -- opening a study-less session; the case was NOT completed, use the panel's retry" >&2
 fi
 
-WEASIS_URI=$(python3 - "$CASE_JSON" "$ORTHANC_URL" <<'PYEOF'
-import json, sys, urllib.parse
+# Issue #180: the URI comes from weasis_case_uri.py, the same helper the Kasm flow
+# and the window loop use (so the first study and later ones cannot drift apart).
+# Empty output (complete case, no study, unparseable response) = plain Weasis.
+# WEASIS_URI_HELPER is a test seam.
+WEASIS_URI_HELPER="${WEASIS_URI_HELPER:-/opt/grading-panel/weasis_case_uri.py}"
+WEASIS_URI=$(python3 "$WEASIS_URI_HELPER" uri "$CASE_JSON" "$ORTHANC_URL" 2>/dev/null || true)
 
-case_json, orthanc_url = sys.argv[1], sys.argv[2]
-try:
-    case = json.loads(case_json)
-except ValueError:
-    sys.exit(0)
-
-study_uid = case.get("orthanc_study_uid")
-if case.get("complete") or not study_uid:
-    sys.exit(0)
-
-dicomweb_url = orthanc_url.rstrip("/") + "/dicom-web"
-parts = [
-    "$dicom:rs",
-    "--url",
-    f'"{dicomweb_url}"',
-    "-r",
-    f'"requestType=STUDY&studyUID={study_uid}"',
-]
-print("weasis://?" + "+".join(urllib.parse.quote(p, safe="") for p in parts))
-PYEOF
-)
-
-# Grading panel: a plain browser tab, not the locked-down WebKit2GTK embed
-# docker/kasm-workspace-weasis/grading_panel_window.py builds -- that
-# component exists specifically to close off save/print/devtools/
-# navigation as attack surface, all explicitly out of scope here.
-#
-# WEBKIT_FORCE_SANDBOX=0: fixes a *different* problem than it looks like
-# at first -- confirmed the hard way (issue #52's own investigation) that
-# this does NOT disable bubblewrap (bwrap) itself. epiphany's WebProcess
-# and its xdg-dbus-proxy still run wrapped in bwrap regardless of this
-# variable (visible in `ps aux` inside a real session either way). What
-# actually happens without it: WebKitGTK's own sandbox-negotiation layer
-# crash-loops the WebProcess repeatedly ("Web process crashed", over and
-# over) even when bwrap's own namespace syscalls succeed -- a GTK-level
-# issue, unrelated to seccomp. This variable avoids that crash loop; it is
-# NOT a substitute for giving bwrap the namespace/mount syscalls it still
-# needs regardless -- see scripts/provision-guacamole-session.py's own
-# comment and docker/guacamole-weasis/seccomp/build-profile.py for that
-# separate, still-necessary fix.
 # Issue #179: forensic watermark (mandatory, CLAUDE.md), same as the Kasm
 # flow's custom_startup.sh: picom makes the overlay window genuinely
 # transparent (without it overlay.py falls back to a glyph-shaped window), and
@@ -128,10 +91,41 @@ else
     echo "launch-session: ERROR watermark watchdog missing at ${WATERMARK_WATCHDOG} -- this session has NO forensic watermark" >&2
 fi
 
-export WEBKIT_FORCE_SANDBOX=0
-BROWSER_BIN="${BROWSER_BIN:-epiphany}"
-GRADING_PANEL_URL="${VIEWER_URL}grading-panel.html?student_id=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1]))" "$STUDENT_ID")&session_id=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1]))" "$SESSION_ID")#token=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1]))" "$GRADING_TOKEN")"
-"$BROWSER_BIN" "$GRADING_PANEL_URL" &
+# Grading panel (issue #180): the Kasm flow's own panel window
+# (grading_panel_window.py, a small WebKit2GTK 4.1 window), reused instead of a
+# stock browser. Why: the previous version started epiphany with
+# WEBKIT_FORCE_SANDBOX=0 (issue #52), but current WebKitGTK ignores that variable
+# ("no longer allows disabling the sandbox"), so epiphany's web process crashed
+# and the panel stayed a blank white window with the title "Blank page" (seen in
+# a live run, in both this image and the one before it). The Kasm panel renders
+# under this image's seccomp profile (checked live, with the screenshot in the PR),
+# is locked down the same way as in Kasm, and takes the token through the
+# environment instead of a URL fragment, so it is never on a command line.
+# GRADING_PANEL_CMD is a test seam; arrange_windows.sh relaunches the panel with
+# its own default command (the same script) if the student closes it.
+GRADING_PANEL_CMD="${GRADING_PANEL_CMD:-python3 /opt/grading-panel/grading_panel_window.py}"
+GRADING_PANEL_WIDTH="${GRADING_PANEL_WIDTH:-420}"
+# shellcheck disable=SC2086  # GRADING_PANEL_CMD is a command line, split on purpose
+VIEWER_URL="$VIEWER_URL" GRADING_TOKEN="$GRADING_TOKEN" STUDENT_ID="$STUDENT_ID" SESSION_ID="$SESSION_ID" \
+    GRADING_PANEL_WIDTH="$GRADING_PANEL_WIDTH" $GRADING_PANEL_CMD &
+
+# Issue #180: the Kasm flow's window loop (arrange_windows.sh): tiles Weasis and the
+# panel side by side, restores minimised windows, relaunches a closed panel or Weasis
+# (with the CURRENT study), and re-sends the study when the case changes (#185).
+# openbox has no taskbar, so without this a minimised window would be lost, exactly
+# as in the Kasm session (issue #151).
+# A missing script is reported loudly but is not fatal: the session still works,
+# only without tiling. ARRANGE_SCRIPT is a test seam.
+ARRANGE_SCRIPT="${ARRANGE_SCRIPT:-/opt/grading-panel/arrange_windows.sh}"
+WEASIS_BIN="${WEASIS_BIN:-/opt/weasis/bin/Weasis}"
+if [ -x "$ARRANGE_SCRIPT" ]; then
+    VIEWER_URL="$VIEWER_URL" ORTHANC_URL="$ORTHANC_URL" GRADING_TOKEN="$GRADING_TOKEN" \
+        STUDENT_ID="$STUDENT_ID" SESSION_ID="$SESSION_ID" \
+        ARRANGE_WEASIS_BIN="$WEASIS_BIN" ARRANGE_WEASIS_URI="$WEASIS_URI" WEASIS_URI_HELPER="$WEASIS_URI_HELPER" \
+        GRADING_PANEL_WIDTH="$GRADING_PANEL_WIDTH" "$ARRANGE_SCRIPT" 3>&- &
+else
+    echo "launch-session: WARNING ${ARRANGE_SCRIPT} missing -- windows will not be tiled or relaunched" >&2
+fi
 
 WEASIS_BIN="${WEASIS_BIN:-/opt/weasis/bin/Weasis}"
 if [ -n "$WEASIS_URI" ]; then
