@@ -19,7 +19,9 @@
 # guacd's VNC client cannot complete an RFB handshake against KasmVNC at
 # all (it serves VNC exclusively over its own websocket-wrapped protocol,
 # never a raw RFB TCP port); guacd needs a real raw-RFB VNC server.
-FROM ubuntu:24.04
+# Base image pinned by tag AND digest (issue #105): the tag says what it is, the digest
+# makes the build repeatable. To update see docs/REPRODUCIBLE_BUILDS.md.
+FROM ubuntu:24.04@sha256:534baea6a22c03a63003dbc8dbe78fe34bc0d7e595d9a9dc9834884ff530eb55
 
 ARG DEBIAN_FRONTEND=noninteractive
 

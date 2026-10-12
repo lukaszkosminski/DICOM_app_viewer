@@ -1,15 +1,19 @@
-FROM python:3.12-slim
+# Base image pinned by tag AND digest (issue #105): the tag says what it is, the digest
+# makes the build repeatable. To update see docs/REPRODUCIBLE_BUILDS.md.
+FROM python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1
 
-# Picks up Debian security patches released after this base image tag was
-# last rebuilt upstream (e.g. a fixed openssl/libssl3t64 CVE) -- without
-# this, the image's OS packages are only ever as current as whenever
-# python:3.12-slim itself last happened to be rebuilt, not as current as
-# what's actually available in Debian's own repos at build time.
-RUN apt-get update && apt-get upgrade -y && rm -rf /var/lib/apt/lists/*
+# No `apt-get upgrade` here (issue #105): it made every build depend on whatever
+# Debian published that day, so two builds of the same commit could differ and a
+# deployed image could not be reproduced. OS security fixes now arrive by bumping
+# the pinned base image digest above (procedure: docs/REPRODUCIBLE_BUILDS.md), and
+# the security scan (trivy) is what tells us when that is due.
 
 WORKDIR /srv
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# requirements.lock is generated from requirements.txt and pins EVERY package,
+# including transitive ones, with SHA-256 hashes; --require-hashes makes pip
+# refuse anything not in it (docs/REPRODUCIBLE_BUILDS.md says how to regenerate).
+COPY requirements.lock .
+RUN pip install --no-cache-dir --require-hashes -r requirements.lock
 
 COPY app ./app
 

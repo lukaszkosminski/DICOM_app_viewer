@@ -12,7 +12,9 @@
 # in a locked-down exam kiosk; every extra app is extra attack surface.
 # Tag 1.19.0 pinned to match the actual installed Kasm server version
 # (confirmed available via `docker manifest inspect` before using it).
-FROM kasmweb/core-ubuntu-noble:1.19.0
+# Base image pinned by tag AND digest (issue #105): the tag says what it is, the digest
+# makes the build repeatable. To update see docs/REPRODUCIBLE_BUILDS.md.
+FROM kasmweb/core-ubuntu-noble:1.19.0@sha256:69730b0ee6a572635fad9f8cf3ecb3d40fb86e01000f964b2dab719c664f67f4
 
 USER root
 
