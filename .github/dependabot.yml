@@ -1,0 +1,13 @@
+# Keeps the pinned GitHub Actions (full commit SHAs in .github/workflows/ci.yml) current: one
+# weekly pull request that bumps the SHA and the version comment together (issue #67).
+# Only the github-actions ecosystem is configured on purpose: base images and Python packages
+# are bumped by hand through docs/REPRODUCIBLE_BUILDS.md so each bump is reviewed with a scan.
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 3
+    labels:
+      - "dependencies"
