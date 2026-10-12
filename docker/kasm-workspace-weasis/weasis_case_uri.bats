@@ -18,9 +18,20 @@ O="http://viewer:8043/"
   [ "$status" -eq 0 ] && [ "$output" = "1.2.840.1" ]
 }
 
-@test "nothing to open prints nothing and exits 0 (complete, missing, empty, wrong type, bad characters, too long)" {
+@test "real-data UIDs (non-conforming: 14 characters, leading or trailing dot) are accepted (issue #198)" {
+  for u in ".1234567890123" "1234567890123." "12345678901.34" "1..2" "ABC_def-1.2"; do
+    run python3 "$H" uri "{\"orthanc_study_uid\":\"$u\"}" "$O"
+    [ "$status" -eq 0 ]
+    [ -n "$output" ]
+    run python3 "$H" uid "{\"orthanc_study_uid\":\"$u\"}"
+    [ "$output" = "$u" ]
+  done
+}
+
+@test "nothing to open prints nothing and exits 0 (complete, missing, empty, wrong type, unsafe characters, too long)" {
   for j in '{"complete":true,"orthanc_study_uid":"1.2"}' '{}' '{"orthanc_study_uid":""}' '{"orthanc_study_uid":5}' \
-           '{"orthanc_study_uid":"1.2;x"}' '{"orthanc_study_uid":"1..2"}' \
+           '{"orthanc_study_uid":"1.2;x"}' '{"orthanc_study_uid":"1 2"}' '{"orthanc_study_uid":"1\"2"}' \
+           '{"orthanc_study_uid":"1&2=3"}' '{"orthanc_study_uid":"1+2%20"}' '{"orthanc_study_uid":"a/b"}' \
            "{\"orthanc_study_uid\":\"1.$(printf '2%.0s' {1..70})\"}"; do
     run python3 "$H" uri "$j" "$O"
     [ "$status" -eq 0 ]

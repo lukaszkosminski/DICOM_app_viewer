@@ -24,8 +24,9 @@ Exit status (callers rely on it, tests pin it):
 
 Why the URI is built this way is documented in custom_startup.sh's header
 (Weasis ConfigData.splitArgToCmd, the dicom:rs command wrapped in weasis://).
-The study UID goes straight into a command line, so only DICOM UID characters
-(digits and dots, at most 64) are accepted; anything else is "nothing to open".
+The study UID goes straight into a command line, so only characters that cannot break out
+of a quoted argument are accepted (letters, digits, . _ -, at most 64); anything else is
+"nothing to open". See the comment at _UID_RE for why this is not a strict DICOM-UID check.
 """
 
 import json
@@ -33,8 +34,15 @@ import re
 import sys
 import urllib.parse
 
-# DICOM UID: components of digits separated by dots, max 64 characters.
-_UID_RE = re.compile(r"^[0-9]+(\.[0-9]+)*$")
+# What this helper checks is COMMAND-LINE SAFETY, not DICOM conformance: the UID is put
+# inside a quoted argument of a weasis:// command, so it may contain only characters that
+# cannot break out of it (no quotes, spaces, &, =, +, %, slashes, shell characters).
+# Letters, digits, dot, underscore and hyphen, 1-64 characters.
+# Do NOT tighten this to "digits and dots": the radiologist's real studies carry
+# non-conforming UIDs (14 characters, leading or trailing dot; issue #162). They are valid
+# keys in Orthanc and used to load; a strict pattern made Weasis start without a study
+# (found in a live test, issue #198). Conformance of the data is #162's business.
+_UID_RE = re.compile(r"^[0-9A-Za-z._-]{1,64}$")
 
 
 def parse_case(case_json: str) -> dict:
@@ -53,7 +61,7 @@ def study_uid(case: dict) -> str:
     if case.get("complete"):
         return ""
     uid = case.get("orthanc_study_uid")
-    if not isinstance(uid, str) or not uid or len(uid) > 64 or not _UID_RE.match(uid):
+    if not isinstance(uid, str) or not uid or len(uid) > 64 or not _UID_RE.fullmatch(uid):
         return ""
     return uid
 
