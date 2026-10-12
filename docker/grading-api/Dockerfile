@@ -17,10 +17,32 @@ RUN pip install --no-cache-dir --require-hashes -r requirements.lock
 
 COPY app ./app
 
+# issue #51: run as a dedicated non-root user. Neither a container-escape
+# bug nor a compromised app process should ever hand out root inside the
+# namespace it sits in -- the app needs no privilege at all: uvicorn binds
+# 8000 (>1024, no NET_BIND_SERVICE needed), pip installs happen at BUILD
+# time as root above, and every runtime write goes to /data (the named
+# volume) or /tmp. Fixed UID (not "whatever uid 10001 the adduser defaults
+# pick") so the grading-db volume's ownership is reviewable from the
+# Dockerfile alone and stable across rebuilds.
+RUN useradd --uid 10001 --user-group --no-create-home --shell /usr/sbin/nologin grading
+
 # SQLite file lives here, on a named volume (see docker-compose.yml) so
 # progress survives container restarts.
 ENV GRADING_DB_PATH=/data/grading.db
+# /data is pre-created and chowned deliberately: docker-compose.yml mounts
+# the NAMED grading-db volume here, and on FIRST creation docker seeds an
+# empty named volume from the image path it overlays -- ownership included
+# -- so the fresh volume arrives writable by 10001 with no init hack or
+# entrypoint chown. (An UPGRADE keeps a pre-#51, root-owned volume: see the
+# one-time chown note in docker-compose.yml.)
+RUN mkdir -p /data && chown -R grading /srv /data
 VOLUME /data
+
+# Numeric UID:GID (same value, named at runtime for ps readability) --
+# also what Kubernetes' runAsNonRoot check accepts without a matching
+# /etc/passwd entry, should this ever move off compose.
+USER 10001:10001
 
 EXPOSE 8000
 # --no-access-log: uvicorn's own default access log is redundant with (and

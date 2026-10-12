@@ -101,6 +101,17 @@ services:
       - ./local:/local:ro
     networks:
       - ipcmc-internal
+    # issue #51 hardening -- identical rationale to the same block in
+    # docker-compose.yml (non-root images, comments there explain each
+    # line); kept explicit here because this file is deliberately a full
+    # standalone, not an override.
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:size=32m,mode=1777
 
   viewer:
     build: ./docker/viewer
@@ -129,6 +140,18 @@ services:
       - "${BIND_ADDR:-0.0.0.0}:8043:8043"
     networks:
       - ipcmc-internal
+    # issue #51 hardening -- see docker-compose.yml's viewer block for the
+    # full rationale (uid-101 nginx, >1024 ports, conf.d/cache/tmp as the
+    # only writable paths, logs via /dev/stderr+/dev/stdout).
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+      - /etc/nginx/conf.d:size=4m,uid=101,gid=101,mode=0755
+      - /var/cache/nginx:size=32m,uid=101,gid=101,mode=0755
 
 networks:
   ipcmc-internal:
