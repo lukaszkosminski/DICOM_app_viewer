@@ -61,10 +61,40 @@ services:
       # from this published port, which stays loopback-only.
       - "127.0.0.1:8042:8042"
 
+  # One-shot, runs before grading-api on every `docker compose up` (follow-up to issue #51).
+  # grading-api runs as uid 10001; a `grading-db` volume created by an older (root) image is
+  # root-owned and SQLite then fails on the first WRITE with "attempt to write a readonly
+  # database" while /healthz (a read) stays green. This service makes the volume owned by 10001
+  # once and is idempotent (a no-op on a volume that is already right). It is root, but only
+  # for a second, and as small as it can be: no network, read-only root filesystem, every
+  # capability dropped except CHOWN. grading-api itself ALSO refuses to start when its data
+  # volume is not writable (db._check_data_writable), which covers running the image without
+  # this Compose file.
+  grading-db-init:
+    image: alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc
+    container_name: ipcmc-grading-db-init
+    user: "0:0"
+    command: ["chown", "-R", "10001:10001", "/data"]
+    volumes:
+      - grading-db:/data
+    network_mode: none
+    read_only: true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+    security_opt:
+      - no-new-privileges:true
+    restart: "no"
+
   grading-api:
     build: ./docker/grading-api
     container_name: ipcmc-grading-api
     restart: unless-stopped
+    # follow-up to #51: wait for the one-shot ownership fix of the data volume.
+    depends_on:
+      grading-db-init:
+        condition: service_completed_successfully
     # issue #69: readiness probe = grading-api's own GET /healthz (checks the database
     # connection). python:3.12-slim has no curl, so urllib; any non-2xx or connection error
     # raises and the probe fails.
@@ -96,6 +126,23 @@ services:
       # outside viewer's nginx (which proxies /api/ to this) needs to reach
       # it directly, same least-exposure pattern as orthanc.
       - ipcmc-internal
+    # issue #51 (DoD P38/P113 audit extension): the image runs as uid
+    # 10001 (docker/grading-api/Dockerfile); this is the compose-side half
+    # of the same hardening. cap_drop: [ALL] is provable -- uvicorn binds
+    # 8000, >1024, no NET_BIND_SERVICE needed. read_only:true with the app
+    # writing only to /data (the volume) and /tmp (fresh tmpfs below);
+    # no-new-privileges blocks setuid/suid escalation regardless of what
+    # else leaks. UPGRADE NOTE: a grading-db volume created BEFORE #51 is
+    # root-owned; the `grading-db-init` service above fixes that automatically on
+    # every `docker compose up` (and grading-api refuses to start if the volume is
+    # still not writable, instead of failing on the first write).
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:size=32m,mode=1777
 
   viewer:
     build: ./docker/viewer
@@ -132,6 +179,26 @@ services:
     networks:
       - ipcmc-internal
       - kasm_default_network
+    # issue #51 (DoD P38/P113 audit extension): the image runs as nginx's
+    # own uid 101 (docker/viewer/Dockerfile). cap_drop: [ALL] is provable:
+    # both ports are >1024. read_only:true works because every path nginx
+    # writes to is now either an explicit tmpfs below or /dev/std*: conf.d
+    # is what 20-envsubst-on-templates.sh renders into at every start,
+    # /var/cache/nginx is the compiled-in client-body/proxy temp dir, and
+    # /tmp holds the pid file.
+    # Logs intentionally go to /dev/stdout + /dev/stderr instead of yet
+    # another tmpfs -- same `docker logs` surface, one less writable path.
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+      # uid/gid-pinned 0755, not 1777: nginx as uid 101 owns these exactly,
+      # no other process in this container ever needs to write them.
+      - /etc/nginx/conf.d:size=4m,uid=101,gid=101,mode=0755
+      - /var/cache/nginx:size=32m,uid=101,gid=101,mode=0755
 
 networks:
   ipcmc-internal:

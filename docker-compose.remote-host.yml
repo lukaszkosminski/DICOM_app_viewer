@@ -69,10 +69,40 @@ services:
     ports:
       - "${BIND_ADDR:-0.0.0.0}:8042:8042"
 
+  # One-shot, runs before grading-api on every `docker compose up` (follow-up to issue #51).
+  # grading-api runs as uid 10001; a `grading-db` volume created by an older (root) image is
+  # root-owned and SQLite then fails on the first WRITE with "attempt to write a readonly
+  # database" while /healthz (a read) stays green. This service makes the volume owned by 10001
+  # once and is idempotent (a no-op on a volume that is already right). It is root, but only
+  # for a second, and as small as it can be: no network, read-only root filesystem, every
+  # capability dropped except CHOWN. grading-api itself ALSO refuses to start when its data
+  # volume is not writable (db._check_data_writable), which covers running the image without
+  # this Compose file.
+  grading-db-init:
+    image: alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc
+    container_name: ipcmc-grading-db-init
+    user: "0:0"
+    command: ["chown", "-R", "10001:10001", "/data"]
+    volumes:
+      - grading-db:/data
+    network_mode: none
+    read_only: true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+    security_opt:
+      - no-new-privileges:true
+    restart: "no"
+
   grading-api:
     build: ./docker/grading-api
     container_name: ipcmc-grading-api
     restart: unless-stopped
+    # follow-up to #51: wait for the one-shot ownership fix of the data volume.
+    depends_on:
+      grading-db-init:
+        condition: service_completed_successfully
     # issue #69: readiness probe = grading-api's own GET /healthz (checks the database
     # connection). python:3.12-slim has no curl, so urllib; any non-2xx or connection error
     # raises and the probe fails.
@@ -101,6 +131,17 @@ services:
       - ./local:/local:ro
     networks:
       - ipcmc-internal
+    # issue #51 hardening -- identical rationale to the same block in
+    # docker-compose.yml (non-root images, comments there explain each
+    # line); kept explicit here because this file is deliberately a full
+    # standalone, not an override.
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:size=32m,mode=1777
 
   viewer:
     build: ./docker/viewer
@@ -129,6 +170,18 @@ services:
       - "${BIND_ADDR:-0.0.0.0}:8043:8043"
     networks:
       - ipcmc-internal
+    # issue #51 hardening -- see docker-compose.yml's viewer block for the
+    # full rationale (uid-101 nginx, >1024 ports, conf.d/cache/tmp as the
+    # only writable paths, logs via /dev/stderr+/dev/stdout).
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+      - /etc/nginx/conf.d:size=4m,uid=101,gid=101,mode=0755
+      - /var/cache/nginx:size=32m,uid=101,gid=101,mode=0755
 
 networks:
   ipcmc-internal:
