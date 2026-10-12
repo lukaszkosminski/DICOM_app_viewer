@@ -64,6 +64,25 @@ services:
       # outside viewer's nginx (which proxies /api/ to this) needs to reach
       # it directly, same least-exposure pattern as orthanc.
       - ipcmc-internal
+    # issue #51 (DoD P38/P113 audit extension): the image runs as uid
+    # 10001 (docker/grading-api/Dockerfile); this is the compose-side half
+    # of the same hardening. cap_drop: [ALL] is provable -- uvicorn binds
+    # 8000, >1024, no NET_BIND_SERVICE needed. read_only:true with the app
+    # writing only to /data (the volume) and /tmp (fresh tmpfs below);
+    # no-new-privileges blocks setuid/suid escalation regardless of what
+    # else leaks. UPGRADE NOTE: a grading-db volume created BEFORE #51 is
+    # root-owned and SQLite cannot write it as 10001 -- one-time fix:
+    #   docker run --rm -v DICOM_app_viewer_grading-db:/d alpine \
+    #     chown -R 10001:10001 /d
+    # (or `docker compose down -v` in dev, which recreates it with the
+    # image's ownership -- smoke-test.sh does exactly that).
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:size=32m,mode=1777
 
   viewer:
     build: ./docker/viewer
@@ -87,6 +106,26 @@ services:
     networks:
       - ipcmc-internal
       - kasm_default_network
+    # issue #51 (DoD P38/P113 audit extension): the image runs as nginx's
+    # own uid 101 (docker/viewer/Dockerfile). cap_drop: [ALL] is provable:
+    # both ports are >1024. read_only:true works because every path nginx
+    # writes to is now either an explicit tmpfs below or /dev/std*: conf.d
+    # is what 20-envsubst-on-templates.sh renders into at every start,
+    # /var/cache/nginx is the compiled-in client-body/proxy temp dir, and
+    # /tmp holds the pid file.
+    # Logs intentionally go to /dev/stdout + /dev/stderr instead of yet
+    # another tmpfs -- same `docker logs` surface, one less writable path.
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+      # uid/gid-pinned 0755, not 1777: nginx as uid 101 owns these exactly,
+      # no other process in this container ever needs to write them.
+      - /etc/nginx/conf.d:size=4m,uid=101,gid=101,mode=0755
+      - /var/cache/nginx:size=32m,uid=101,gid=101,mode=0755
 
 networks:
   ipcmc-internal:
