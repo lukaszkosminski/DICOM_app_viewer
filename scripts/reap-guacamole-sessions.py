@@ -91,6 +91,7 @@ class Reaper:
         idle_minutes=DEFAULT_IDLE_MINUTES,
         max_age_hours=DEFAULT_MAX_AGE_HOURS,
         state=None,
+        link_dir="",
         log=print,
     ):
         self.docker = docker
@@ -99,7 +100,10 @@ class Reaper:
         self.guac_url = guac_url if guac_url.endswith("/") else guac_url + "/"
         self.admin_user = admin_user
         self.admin_pass = admin_pass
+        self.link_dir = link_dir or gs.DEFAULT_LINK_DIR
         self.grading_api_url = grading_api_url
+        # credential files must not outlive reaped sessions (#191 CodeQL
+        # fix); empty falls back to the shared library default
         self.coordinator_key = coordinator_key
         self.idle_seconds = float(idle_minutes) * 60.0
         self.max_age_seconds = float(max_age_hours) * 3600.0
@@ -220,6 +224,7 @@ class Reaper:
             admin_pass=self.admin_pass,
             grading_api_url=effective_api,
             coordinator_key=self.coordinator_key or None,
+            link_dir=self.link_dir,
         )
         bad = {step: err for step, err in report.items() if not gs.step_ok(err)}
         skipped = {
@@ -323,6 +328,12 @@ def main(argv=None):
     ap.add_argument("--max-age-hours", type=float, default=DEFAULT_MAX_AGE_HOURS)
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--state-file", default="/tmp/guacamole-reaper-state.json")
+    ap.add_argument(
+        "--link-dir",
+        default=os.environ.get("GUACAMOLE_LINK_DIR") or gs.DEFAULT_LINK_DIR,
+        help="delete reaped sessions' 0600 link files here (default "
+        "$GUACAMOLE_LINK_DIR or local/session-links)",
+    )
     args = ap.parse_args(argv)
     guac_url = os.environ.get("GUACAMOLE_URL", "http://localhost:8090/guacamole/")
     admin_user = os.environ.get("GUACAMOLE_ADMIN_USERNAME", "guacadmin")
@@ -342,6 +353,7 @@ def main(argv=None):
         idle_minutes=args.idle_minutes,
         max_age_hours=args.max_age_hours,
         state=state,
+        link_dir=args.link_dir,
     )
     try:
         summary = reaper.run(dry_run=args.dry_run)

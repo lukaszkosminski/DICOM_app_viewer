@@ -43,6 +43,7 @@ enforcement site.
 | `GUACAMOLE_ADMIN_USERNAME` | `guacadmin` | no | no | config-usera | none | `provision-`/`teardown-guacamole-session.py` |
 | `GUACAMOLE_ADMIN_PASSWORD` | `guacadmin` | no | yes | config-usera | none — the DEFAULT IS A WEAK SECRET; PoC seam only, production must set it | `provision-`/`teardown-guacamole-session.py` |
 | `GUACAMOLE_WEASIS_IMAGE` | `ipcmc/guacamole-weasis:poc` | no | no | config-usera | image name | `provision-guacamole-session.py`, `guacamole-iac.sh` |
+| `GUACAMOLE_USER_VALID_HOURS` | `48` (matches the reaper's max-age) | no | no | config-operator | float > 0; sets the JDBC user's `valid-until` (day-grained, rounded UP -- see #191 source notes in the provisioner); reaper remains the hard limit | `provision-guacamole-session.py` |
 | `DOCKER_NETWORK` | `dicom_app_viewer_ipcmc-internal` | no | no | config-usera | docker network name | `provision-guacamole-session.py` |
 
 Security note on `BIND_ADDR` (`0.0.0.0` default): publishing `:8043`
