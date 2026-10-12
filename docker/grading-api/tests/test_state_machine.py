@@ -379,6 +379,8 @@ def test_results_after_completion_reports_accuracy(client, mint_token):
             body["modifier_s"] = stage == "test"
         client.post("/submit", json=body)
 
+    # issue #202: the correct answers and the score appear only after the doctor approves
+    assert client.post("/finalize", json={"token": token}).status_code == 200
     data = client.get("/results", headers={"X-Grading-Token": token}).json()
     assert data["complete"] is True
     assert data["test_total"] == 1
