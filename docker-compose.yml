@@ -18,6 +18,25 @@ services:
     image: orthancteam/orthanc:26.9.1@sha256:d2705f2c56547e55ce9bc2250fd22d05d326493b3f3d9fa191ecb7db8ca6b5a2
     container_name: ipcmc-orthanc
     restart: unless-stopped
+    # issue #69: readiness, not just "the process started". Orthanc answers /system once its
+    # database is open. The image has python3 but no curl/wget, so the probe is a Python
+    # one-liner; it authenticates with the container's own ORTHANC_PASSWORD (read from the
+    # environment, so it never appears on a command line). Generous start_period: the first
+    # start on an existing large store can take a while.
+    healthcheck:
+      test:
+        - CMD
+        - python3
+        - -c
+        - |
+          import base64, os, sys, urllib.request
+          req = urllib.request.Request("http://127.0.0.1:8042/system")
+          req.add_header("Authorization", "Basic " + base64.b64encode(("orthanc:" + os.environ["ORTHANC_PASSWORD"]).encode()).decode())
+          sys.exit(0 if urllib.request.urlopen(req, timeout=3).status == 200 else 1)
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 40s
     environment:
       # Sets the "orthanc" user's password directly (image feature, no
       # RegisteredUsers block needed in orthanc.json). Comes from .env
@@ -46,6 +65,19 @@ services:
     build: ./docker/grading-api
     container_name: ipcmc-grading-api
     restart: unless-stopped
+    # issue #69: readiness probe = grading-api's own GET /healthz (checks the database
+    # connection). python:3.12-slim has no curl, so urllib; any non-2xx or connection error
+    # raises and the probe fails.
+    healthcheck:
+      test:
+        - CMD
+        - python3
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=3)"
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
     environment:
       # Shared secret with scripts/create-session.py -- the only client
       # allowed to mint a session token (POST /session). No default here
@@ -88,9 +120,22 @@ services:
     build: ./docker/viewer
     container_name: ipcmc-viewer
     restart: unless-stopped
+    # issue #69: start only once both backends answer their health probes, not as soon as
+    # their processes exist (the race scripts/smoke-test.sh works around with retry loops;
+    # those stay as defence in depth).
     depends_on:
-      - orthanc
-      - grading-api
+      orthanc:
+        condition: service_healthy
+      grading-api:
+        condition: service_healthy
+    # issue #69: the viewer is healthy when nginx serves AND can reach grading-api through
+    # its own /api/ proxy (busybox wget exists in the image; no extra package needed).
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/api/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
     environment:
       # Same password as the orthanc service above -- used to compute the
       # auth-injecting proxy's Basic-Auth header at container start (see
