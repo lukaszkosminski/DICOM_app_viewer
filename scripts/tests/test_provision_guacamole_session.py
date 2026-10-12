@@ -623,3 +623,63 @@ def test_teardown_step_deletes_the_link_file(tmp_path):
     import pytest as _p
     with _p.raises(gs.NamespaceViolation):
         gs.link_file_name("guac-weasis-bad/../etc-passwd-1")
+
+
+def test_nonnumeric_session_id_refused_before_any_side_effect(
+    mock_docker_run, monkeypatch, capsys
+):
+    # Owner decision after the e2e CI break: digits-only, enforced BEFORE
+    # the token mint -- the old "e2e" id used to blow up LATE (raw
+    # NamespaceViolation from link_file_name) after real objects existed.
+    provision._UNDO.clear()
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["provision-guacamole-session.py", "--student-id", "STU_X", "--session-id", "e2e"],
+    )
+    seen = []
+
+    def spy(req, timeout=15):
+        seen.append(req.full_url)
+        return _fake_urlopen(req, timeout=timeout)
+
+    with patch.object(urllib.request, "urlopen", side_effect=spy):
+        with pytest.raises(SystemExit) as stop:
+            provision.main()
+    assert stop.value.code == 1
+    err = capsys.readouterr().err
+    assert "session-id must be 1-20 digits" in err
+    assert seen == [] and mock_docker_run == []  # zero side effects
+    assert "Traceback" not in err
+
+
+def test_late_unexpected_error_goes_through_rollback_not_traceback(
+    mock_docker_run, monkeypatch, capsys, isolated_link_dir
+):
+    # p2 item 2: ANY exception after the first side effect must exit via
+    # the compensation path -- here we make link_file_name explode the way
+    # the pre-guard e2e session id did.
+    provision._UNDO.clear()
+    monkeypatch.setattr(
+        sys, "argv", ["provision-guacamole-session.py", "--student-id", "STU_LATE"]
+    )
+
+    def boom(_name):
+        raise RuntimeError("synthetic late failure")
+
+    seen = []
+
+    def spy(req, timeout=15):
+        seen.append(req.full_url)
+        return _fake_urlopen(req, timeout=timeout)
+
+    monkeypatch.setattr(provision.gs, "link_file_name", boom)
+    with patch.object(urllib.request, "urlopen", side_effect=spy):
+        with pytest.raises(SystemExit) as stop:
+            provision.main()
+    assert stop.value.code == 1
+    err = capsys.readouterr().err
+    assert "unexpected failure: RuntimeError: synthetic late failure" in err
+    assert "Traceback" not in err
+    assert any(c[:3] == ["docker", "rm", "-f"] for c in mock_docker_run)  # container undid
+    assert any("/api/session/revoke" in u for u in seen)  # token undid

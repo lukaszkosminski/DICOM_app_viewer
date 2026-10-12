@@ -284,6 +284,18 @@ def _provision():
     student_id = args.student_id
     session_id = args.session_id or str(int(time.time()))
 
+    # Owner decision (e2e CI break): the container-name guard (see
+    # guacamole_session.CONTAINER_NAME_RE) allows ONLY numeric session ids
+    # (1-20 digits), so we enforce it here, UP FRONT -- a rejected id costs
+    # nothing (no token minted, no docker call), while discovering it late
+    # (via link_file_name or teardown) left half-built sessions behind.
+    if not re.fullmatch(r"\d{1,20}", session_id):
+        raise ProvisionAborted(
+            f"--session-id must be 1-20 digits, got {session_id!r} (the "
+            "container/user/link namespace guard requires it; the default "
+            "timestamp already complies)"
+        )
+
     # Validated FIRST: an unusable lifetime must abort before the token
     # mint, so there is nothing to roll back (and the CLI exits 1 with a
     # clear message via main()'s ProvisionAborted path).
@@ -575,6 +587,13 @@ def main():
     except ProvisionAborted as exc:
         _rollback(str(exc))
         _UNDO.clear()  # a failed run must never leave live undos for anything else to trip on
+        sys.exit(1)
+    except Exception as exc:  # noqa: BLE001
+        # No raw traceback AFTER side effects -- unexpected bugs also exit
+        # through the compensation path (p2 review of the e2e CI break:
+        # a late NamespaceViolation had already created container + user).
+        _rollback(f"unexpected failure: {type(exc).__name__}: {exc}")
+        _UNDO.clear()
         sys.exit(1)
     _UNDO.clear()  # success: the session is LIVE -- its registered undos are dropped, NOT run
 
