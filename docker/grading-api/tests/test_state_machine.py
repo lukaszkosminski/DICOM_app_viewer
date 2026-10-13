@@ -708,7 +708,7 @@ def test_submit_resets_the_clock_for_the_next_case(client, mint_token):
     assert row["time_spent_seconds"] < 5  # freshly stamped, not ~100s inherited from case 1
 
 
-def test_reset_clears_progress_and_submissions(client, mint_token):
+def test_reset_clears_progress_and_submissions(client, mint_token, reset_on):
     token = mint_token("stu_13")
     case_id = _case_id(client, token)
     client.post(
@@ -758,7 +758,7 @@ def test_submit_duplicate_for_same_case_stage_returns_409(client, mint_token):
     assert resp.status_code == 409
 
 
-def test_reset_is_blocked_during_test_stage(client, mint_token):
+def test_reset_is_blocked_during_test_stage(client, mint_token, reset_on):
     """The actual cheating vector issue #27 exists to close: without this
     guard, a student partway through the graded exam who doesn't like how
     it's going could reset and retry with a case sequence they now
@@ -787,7 +787,7 @@ def test_reset_is_blocked_during_test_stage(client, mint_token):
     assert data["position"] == 1
 
 
-def test_reset_still_allowed_after_completion(client, mint_token):
+def test_reset_still_allowed_after_completion(client, mint_token, reset_on):
     """The one existing, legitimate use of reset (per main.py's own
     docstring: "once a student reaches 'complete', this is the way back
     to a fresh learning-stage case") must keep working -- the test-stage

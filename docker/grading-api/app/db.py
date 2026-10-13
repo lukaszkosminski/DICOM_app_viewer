@@ -396,7 +396,34 @@ def _migration_needed(conn) -> bool:
     return False
 
 
+def _check_data_writable():
+    """Refuse to start when the process cannot WRITE its database (issue #51 follow-up).
+
+    Since the image runs as uid 10001, a `grading-db` volume created by an older, root-run
+    image is root-owned: the container used to start, /healthz (a read) stayed green, and the
+    first real write (a session, a submission) failed with `attempt to write a readonly
+    database` -> HTTP 500 for the doctor. Checking here turns that into one clear start-up
+    error (exit 2, same contract as _fatal_config_error) that `docker compose up` and the
+    health checks surface immediately. Compose also fixes the ownership by itself through the
+    one-shot `grading-db-init` service; this check covers every other way of running the image.
+    """
+    directory = os.path.dirname(os.path.abspath(DB_PATH)) or "."
+    problems = []
+    if not os.access(directory, os.W_OK | os.X_OK):
+        problems.append(f"the directory {directory} is not writable")
+    if os.path.exists(DB_PATH) and not os.access(DB_PATH, os.W_OK):
+        problems.append(f"the database file {DB_PATH} is not writable")
+    if problems:
+        _fatal_config_error(
+            "CONFIGURATION ERROR: " + " and ".join(problems) + f" for uid {os.getuid()}. "
+            "A data volume created by a pre-#51 (root) image is root-owned. With the repository's "
+            "docker-compose files the `grading-db-init` service fixes this automatically; otherwise run once: "
+            "docker run --rm -u 0 -v <your grading-db volume>:/data alpine chown -R 10001:10001 /data"
+        )
+
+
 def init_db():
+    _check_data_writable()
     conn = get_connection()
     # issue #96/#85 hook: copy the file BEFORE anything rewrites it.
     # Gated on _migration_needed so routine restarts don't pile up

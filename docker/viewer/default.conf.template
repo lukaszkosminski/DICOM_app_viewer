@@ -86,7 +86,11 @@ server {
         }
         set $args '';
 
-        access_log /var/log/nginx/access.log api_no_args;
+        # issue #51: /dev/stdout, not /var/log/nginx/access.log -- the
+        # nginx master now runs as uid 101 on a read_only root filesystem
+        # (see docker/viewer/Dockerfile); the line still lands in
+        # `docker logs`, which is where scripts/test-log-leak.sh reads it.
+        access_log /dev/stdout api_no_args;
 
         proxy_pass http://grading-api:8000/;
         proxy_set_header Host $host;
