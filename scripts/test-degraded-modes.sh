@@ -63,9 +63,10 @@ fi
 
 echo "--- docker compose up (project $COMPOSE_PROJECT) ---"
 # --wait gates on the stack's own health checks (#69) instead of this
-# script polling --wait-timeout bounds a wedged container to 5 min rather
-# than the job's whole budget. "${COMPOSE[@]}" keeps the -p flag on EVERY
-# compose call below, teardown included.
+# script polling for a healthy endpoint. --wait-timeout separately bounds
+# a wedged container to 5 min rather than letting it eat the job's whole
+# budget. "${COMPOSE[@]}" keeps the -p flag on EVERY compose call below,
+# teardown included.
 "${COMPOSE[@]}" up -d --build --wait --wait-timeout 300 || { echo "compose up failed"; exit 1; }
 
 # --- helpers -------------------------------------------------------------
@@ -87,6 +88,19 @@ wait_for() {
 
 pass() { echo "--- $1: OK ($2) ---"; }
 fail() { echo "--- $1: FAIL ($2) ---"; status=1; }
+
+# check_eq <want> <got> <label>: if/else on purpose. The tempting
+# `[ x = y ] && pass ... || fail ...` one-liner is SC2015 -- a fail() in
+# the middle would run fail() no matter which side broke -- so every
+# equality assertion goes through here. (Review of #219, SC2015.)
+check_eq() {
+  local want="$1" got="$2" label="$3"
+  if [ "$want" = "$got" ]; then
+    pass "$label" "HTTP $got"
+  else
+    fail "$label" "HTTP $got (expected HTTP $want)"
+  fi
+}
 
 # Every scenario ends by bringing the stack fully back up; these two
 # recovery waits gate the next scenario on real recovery, not sleep luck.
@@ -133,7 +147,7 @@ else
 fi
 rm -rf "$BURST_DIR"
 RECOVER=$(wait_api_up)
-[ "$RECOVER" = 200 ] && pass "rate limit releases after burst" "HTTP $RECOVER" || fail "rate limit releases after burst" "HTTP $RECOVER"
+check_eq 200 "$RECOVER" "rate limit releases after burst"
 
 # --- 2. SQLite locked past busy_timeout ----------------------------------
 # A second connection holds BEGIN EXCLUSIVE for 8 s while a write request
@@ -164,7 +178,7 @@ POST_LOCK=$(curl -s -o /dev/null -w '%{http_code}' \
   -X POST http://localhost:8080/api/session -H 'Content-Type: application/json' \
   -H "X-Coordinator-Key: ${GRADING_COORDINATOR_KEY}" \
   -d "{\"student_id\": \"DEGRADED_LOCK_$$\", \"session_id\": \"dl1\"}")
-[ "$POST_LOCK" = 200 ] && pass "same write succeeds once the lock is gone (no state lost)" "HTTP $POST_LOCK" || fail "same write succeeds once the lock is gone (no state lost)" "HTTP $POST_LOCK"
+check_eq 200 "$POST_LOCK" "same write succeeds once the lock is gone (no state lost)"
 
 # --- 3. grading-api down --------------------------------------------------
 # The edge must say "gateway error" -- never success, never a JSON shape
@@ -180,10 +194,10 @@ else
   fail "/api/case answers a gateway error, not success" "HTTP $DOWN_CODE (expected 502/504)"
 fi
 STATIC_CODE=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/)
-[ "$STATIC_CODE" = 200 ] && pass "viewer static pages unaffected" "HTTP $STATIC_CODE" || fail "viewer static pages unaffected" "HTTP $STATIC_CODE"
+check_eq 200 "$STATIC_CODE" "viewer static pages unaffected"
 "${COMPOSE[@]}" start grading-api >/dev/null 2>&1
 RECOVER=$(wait_api_up)
-[ "$RECOVER" = 200 ] && pass "grading-api recovered" "HTTP $RECOVER" || fail "grading-api recovered" "HTTP $RECOVER"
+check_eq 200 "$RECOVER" "grading-api recovered"
 
 # --- 4. Orthanc down (through the auth proxy) -----------------------------
 # The student-visible symptom is an empty iframe; the server-side truth
@@ -202,10 +216,10 @@ else
   fail "auth proxy answers a gateway error for a dead Orthanc" "HTTP $ORTHO_CODE (expected 502/504)"
 fi
 API_ALIVE=$(wait_for 200 15 http://localhost:8080/api/healthz)
-[ "$API_ALIVE" = 200 ] && pass "grading unaffected by Orthanc outage" "HTTP $API_ALIVE" || fail "grading unaffected by Orthanc outage" "HTTP $API_ALIVE"
+check_eq 200 "$API_ALIVE" "grading unaffected by Orthanc outage"
 "${COMPOSE[@]}" start orthanc >/dev/null 2>&1
 RECOVER=$(wait_orthanc_up)
-[ "$RECOVER" = 200 ] && pass "Orthanc recovered" "HTTP $RECOVER" || fail "Orthanc recovered" "HTTP $RECOVER"
+check_eq 200 "$RECOVER" "Orthanc recovered"
 
 if [ "$status" -eq 0 ]; then
   echo "All degraded-mode checks passed (see docs/DEGRADED_MODES.md for the contract under test)."
