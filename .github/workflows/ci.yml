@@ -37,7 +37,7 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"  # matches docker/grading-api/Dockerfile's own base image
@@ -51,7 +51,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: lint
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Build every image in the repo (does it compile?)
         run: ./scripts/build-test.sh
 
@@ -60,7 +60,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: build-test
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
@@ -92,7 +92,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: security-scan
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
@@ -100,7 +100,7 @@ jobs:
         run: ./scripts/test-grading-api.sh
       - name: Upload coverage report (issue #101)
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: grading-api-coverage
           path: docker/grading-api/coverage.xml
@@ -109,7 +109,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: security-scan
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install bats
         run: sudo apt-get -o Acquire::Retries=5 update -qq && sudo apt-get -o Acquire::Retries=5 install -y -qq bats
       - name: BATS test the Kasm workspace launcher scripts (issue #16)
@@ -119,7 +119,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: security-scan
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
@@ -131,7 +131,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: [unit-test, shell-test, provision-guacamole-session-test]
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Smoke test (brings the stack up, checks the endpoints)
         run: ./scripts/smoke-test.sh
 
@@ -139,7 +139,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: [unit-test, shell-test, provision-guacamole-session-test]
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Guacamole PoC end-to-end test (Playwright, docker-in-docker)
         run: ./scripts/test-guacamole-integration.sh
 
@@ -147,7 +147,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: [unit-test, shell-test, provision-guacamole-session-test]
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Visual regression test (watermark.html + grading-panel.html)
         run: ./scripts/test-visual-regression.sh
       # On a mismatch, the plugin overwrites the baseline in this ephemeral
@@ -157,7 +157,7 @@ jobs:
       # is gitignored and wouldn't otherwise survive past this job.
       - name: Upload visual diff artifacts on failure
         if: failure()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: visual-regression-diffs
           path: docker/viewer/tests/__snapshot_failures__/
@@ -167,7 +167,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: [unit-test, shell-test, provision-guacamole-session-test]
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
@@ -178,7 +178,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: [unit-test, shell-test, provision-guacamole-session-test]
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Sentinel log-leak test (no credential/PHI value in any nginx log path, issue #94/#93)
         run: ./scripts/test-log-leak.sh
 
@@ -186,7 +186,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: [unit-test, shell-test, provision-guacamole-session-test]
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Watermark overlay shape-complexity budget (flicker regression guard)
         run: ./scripts/test-overlay-shape.sh
 
@@ -194,7 +194,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: [unit-test, shell-test, provision-guacamole-session-test]
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Watermark overlay modes on a real X server (picom alpha / shape fallback, issue #150)
         run: ./scripts/test-overlay-compositor.sh
 
@@ -229,7 +229,7 @@ jobs:
       - overlay-compositor-test
     if: always()
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Confirm every job succeeded
         env:
           NEEDS_JSON: ${{ toJSON(needs) }}

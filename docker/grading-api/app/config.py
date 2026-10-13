@@ -115,6 +115,25 @@ def validate_token_ttl_seconds(raw: str | None) -> int:
     return ttl
 
 
+def validate_reset_enabled(raw: str | None) -> bool:
+    """GRADING_RESET_ENABLED: whether POST /reset (a doctor starting over) is allowed.
+
+    Off by default: /reset deletes the doctor's recorded answers (issue #98), and those answers
+    feed a scientific publication. It exists for local testing only, until retakes are modelled
+    as archived, separate attempts. Accepts 1/true/yes/on and 0/false/no/off (any case)."""
+    if raw is None or raw.strip() == "":
+        return False
+    value = raw.strip().lower()
+    if value in ("1", "true", "yes", "on"):
+        return True
+    if value in ("0", "false", "no", "off"):
+        return False
+    raise ConfigError(
+        f"GRADING_RESET_ENABLED must be 1/true/yes/on or 0/false/no/off, got "
+        f"{raw[:_MAX_ECHOED_VALUE_CHARS]!r} (default: off)."
+    )
+
+
 def _exit_on_config_error(exc: ConfigError) -> None:
     # SystemExit (not a bare raise) so `docker run`/uvicorn exits with a
     # clear one-line operator message instead of an import-time traceback
@@ -130,5 +149,6 @@ def _exit_on_config_error(exc: ConfigError) -> None:
 try:
     COORDINATOR_KEY = validate_coordinator_key(os.environ.get("GRADING_COORDINATOR_KEY"))
     TOKEN_TTL_SECONDS = validate_token_ttl_seconds(os.environ.get("GRADING_TOKEN_TTL_SECONDS"))
+    RESET_ENABLED = validate_reset_enabled(os.environ.get("GRADING_RESET_ENABLED"))
 except ConfigError as exc:
     _exit_on_config_error(exc)

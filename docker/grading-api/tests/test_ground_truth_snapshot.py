@@ -118,6 +118,7 @@ def test_results_never_move_after_legal_gt_change(client, mint_token):
     keep the old version's GT; accuracy and breakdown are byte-stable."""
     token = mint_token("stu_stable")
     _walk_to_complete(client, token)
+    assert client.post("/finalize", json={"token": token}).status_code == 200  # issue #202
     before = client.get("/results", headers={"X-Grading-Token": token}).json()
     assert before["accuracy"] == 1.0
 
@@ -278,9 +279,16 @@ def test_migrated_db_results_served_from_snapshot(tmp_path, monkeypatch):
     from app.main import app
 
     with TestClient(app) as tc:
+        # issue #202: a student who had already finished before the column existed has not
+        # approved yet -> nothing is revealed until they do
+        assert tc.get("/results", headers={"X-Grading-Token": "tok-old"}).json() == {
+            "complete": True,
+            "finalized": False,
+        }
+        assert tc.post("/finalize", json={"token": "tok-old"}).status_code == 200
         results = tc.get("/results", headers={"X-Grading-Token": "tok-old"}).json()
-    assert results == {
-        "complete": True,
+    assert results["complete"] is True and results["finalized"] is True
+    assert {k: results[k] for k in ("test_total", "test_correct", "accuracy", "breakdown")} == {
         "test_total": 1,
         "test_correct": 1,
         "accuracy": 1.0,
@@ -387,6 +395,7 @@ def test_after_cases_migration_submission_writes_work_raw_and_via_api(tmp_path, 
         )
         # (b) /submit itself -- THE endpoint the blocker killed -- now 200
         assert resp.status_code == 200, resp.text
+        assert tc.post("/finalize", json={"token": "tok-api"}).status_code == 200  # issue #202
         results = tc.get("/results", headers={"X-Grading-Token": "tok-api"}).json()
         assert results["complete"] is True and results["test_correct"] == 1
 
