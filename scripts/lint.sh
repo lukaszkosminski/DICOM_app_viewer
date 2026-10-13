@@ -28,7 +28,7 @@ docker compose -f docker-compose.remote-host.yml config >/dev/null || status=1
 docker compose -f docker-compose.yml -f docker-compose.guacamole.yml config >/dev/null || status=1
 
 echo "--- pinned external images: tag + immutable digest (issue #50) ---"
-# Every `image:` line in the two DEPLOYMENT compose files must pin
+# Every `image:` line in every compose file (deployment AND the Guacamole PoC stack) must pin
 # `name:tag@sha256:<64 hex>`. Today only orthanc is image-based
 # (grading-api/viewer are build:) -- if a future external image appears it
 # is covered by the same rule with no exemption list, by design.
@@ -50,7 +50,7 @@ while IFS= read -r line; do
       echo "UNPINNED image (needs name:tag@sha256:<digest>): $stripped" >&2
       pin_ok=0 ;;
   esac
-done < <(grep -hE '^[[:space:]]*image:[[:space:]]' docker-compose.yml docker-compose.remote-host.yml)
+done < <(grep -hE '^[[:space:]]*image:[[:space:]]' docker-compose.yml docker-compose.remote-host.yml docker-compose.guacamole.yml)
 
 orthanc_main=$(grep -E '^[[:space:]]*image:[[:space:]]*orthancteam/orthanc:' docker-compose.yml | tr -d '[:space:]')
 orthanc_remote=$(grep -E '^[[:space:]]*image:[[:space:]]*orthancteam/orthanc:' docker-compose.remote-host.yml | tr -d '[:space:]')
