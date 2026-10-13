@@ -63,6 +63,11 @@ def study_uid(case: dict) -> str:
     uid = case.get("orthanc_study_uid")
     if not isinstance(uid, str) or not uid or len(uid) > 64 or not _UID_RE.fullmatch(uid):
         return ""
+    # A UID made only of dots (".", "..", "...") is not a study identifier and would become a
+    # path segment ("/studies/../series") in the DICOMweb requests Weasis builds from it. At
+    # least one letter or digit is required (hardening, from the review of #199).
+    if not any(ch.isalnum() for ch in uid):
+        return ""
     return uid
 
 
