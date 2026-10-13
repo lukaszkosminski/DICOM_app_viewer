@@ -63,3 +63,12 @@ def mint_token(client):
         return resp.json()["token"]
 
     return _mint
+
+
+@pytest.fixture()
+def reset_on(monkeypatch):
+    """POST /reset is OFF by default (issue #98, GRADING_RESET_ENABLED); the tests of the
+    reset behaviour itself switch it on explicitly."""
+    from app import main as main_module
+
+    monkeypatch.setattr(main_module, "RESET_ENABLED", True)

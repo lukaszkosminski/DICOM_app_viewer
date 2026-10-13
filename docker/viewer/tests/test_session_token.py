@@ -123,9 +123,9 @@ def test_reload_on_the_review_and_results_screens_keeps_the_session(page, base_u
     page.wait_for_selector("#approve-btn", timeout=15000)
     assert page.locator("#session-expired").count() == 0
     page.click("#approve-btn")
-    page.wait_for_selector("#restart-btn", timeout=15000)
+    page.wait_for_selector("#results-title", timeout=15000)
     page.reload()
-    page.wait_for_selector("#restart-btn", timeout=15000)
+    page.wait_for_selector("#results-title", timeout=15000)
     assert page.locator("#session-expired").count() == 0
     rec.assert_token_never_in_a_url(token)
 

@@ -49,3 +49,19 @@ def test_grading_api_installs_only_hashed_requirements_and_never_upgrades_the_os
     text = (ROOT / "docker/grading-api/Dockerfile").read_text()
     assert "--require-hashes" in text and "requirements.lock" in text
     assert not re.search(r"^\s*RUN.*apt-get\s+(dist-)?upgrade", text, re.M)
+
+
+def test_every_curl_download_in_a_dockerfile_fails_loudly_and_retries():
+    """A flaky GitHub release download failed a PR build while the same commit passed in the push
+    run (2026-10-12); a download inside a Dockerfile must retry transient errors."""
+    seen = 0
+    for df in DOCKERFILES:
+        text = df.read_text()
+        for m in re.finditer(r"curl\s+(-[A-Za-z]+\s+)+[^\n]*", text):
+            line = m.group(0)
+            if "-o " not in line and "|" not in line:
+                continue  # the apt package name `curl` in an install list, not a download
+            seen += 1
+            assert "--retry 5" in line and "--retry-all-errors" in line, f"{df}: {line}"
+            assert re.search(r"-\w*f", line), f"{df}: {line}"
+    assert seen >= 2

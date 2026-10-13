@@ -41,7 +41,7 @@ from pydantic import BaseModel, Field
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from . import db
-from .config import COORDINATOR_KEY
+from .config import COORDINATOR_KEY, RESET_ENABLED
 from .errors import AppError, app_error_handler, unhandled_exception_handler, validation_error_handler
 from .logging_config import configure_logging, get_logger, request_id_var
 
@@ -646,6 +646,15 @@ def reset(body: ResetBody):
     sees which case comes next. learning/assessment/complete are
     unaffected -- neither stage is graded, and 'complete' is the
     documented, legitimate way to start a fresh run."""
+    if not RESET_ENABLED:
+        # issue #98: /reset deletes recorded answers. Off unless GRADING_RESET_ENABLED=1 (local
+        # testing). Checked first, but a valid token is still required to learn anything.
+        conn = db.get_connection()
+        try:
+            _resolve_token(conn, body.token)
+        finally:
+            conn.close()
+        raise AppError(403, "RESET_DISABLED", "Starting over is disabled; ask the coordinator for a new session")
     conn = db.get_connection()
     try:
         student_id = _resolve_token(conn, body.token)
@@ -718,7 +727,12 @@ def review(x_grading_token: str | None = Header(default=None, alias="X-Grading-T
             }
             for pos, total, r in _numbered(_answer_rows(conn, student_id))
         ]
-        return {"complete": True, "finalized": progress["finalized_at"] is not None, "items": items}
+        return {
+            "complete": True,
+            "finalized": progress["finalized_at"] is not None,
+            "reset_enabled": RESET_ENABLED,
+            "items": items,
+        }
     finally:
         conn.close()
 
@@ -808,6 +822,7 @@ def results(x_grading_token: str | None = Header(default=None, alias="X-Grading-
             "test_correct": correct,
             "accuracy": (correct / total) if total else None,
             "breakdown": breakdown,
+            "reset_enabled": RESET_ENABLED,
             "items": items,
         }
     finally:

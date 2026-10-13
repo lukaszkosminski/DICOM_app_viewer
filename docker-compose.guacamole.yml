@@ -43,6 +43,13 @@ services:
       - POSTGRES_DB=guacamole_db
       - POSTGRES_USER=guacamole
       - POSTGRES_PASSWORD=${GUACAMOLE_DB_PASSWORD:?Set GUACAMOLE_DB_PASSWORD in .env -- see .env.example}
+    # issue #69: ready when Postgres accepts connections for this database and user.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U guacamole -d guacamole_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
     volumes:
       - guacamole-db-data:/var/lib/postgresql/data
       # Official Apache-licensed schema, regenerate with:
@@ -55,6 +62,13 @@ services:
     image: guacamole/guacd:1.6.0
     container_name: ipcmc-guacd
     restart: unless-stopped
+    # issue #69: guacd is ready when it accepts a TCP connection on its port 4822 (busybox nc).
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z 127.0.0.1 4822"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
     networks:
       - ipcmc-internal
 
@@ -62,15 +76,25 @@ services:
     image: guacamole/guacamole:1.6.0
     container_name: ipcmc-guacamole
     restart: unless-stopped
+    # issue #69: do not start the web app before its database and guacd are ready.
     depends_on:
-      - guacd
-      - guacamole-db
+      guacd:
+        condition: service_healthy
+      guacamole-db:
+        condition: service_healthy
     environment:
       - GUACD_HOSTNAME=ipcmc-guacd
       - POSTGRESQL_HOSTNAME=ipcmc-guacamole-db
       - POSTGRESQL_DATABASE=guacamole_db
       - POSTGRESQL_USER=guacamole
       - POSTGRESQL_PASSWORD=${GUACAMOLE_DB_PASSWORD:?Set GUACAMOLE_DB_PASSWORD in .env -- see .env.example}
+    # issue #69: the web app is ready when Tomcat serves the login page (curl is in the image).
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://127.0.0.1:8080/guacamole/"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 40s
     ports:
       # Bound to localhost only, same reasoning as viewer's own :8043 in
       # the base file -- this is an admin/coordinator-facing surface

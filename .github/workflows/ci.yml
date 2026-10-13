@@ -22,6 +22,12 @@ name: CI
 # file only handles installing each stage's prerequisites, never
 # duplicates the check logic itself.
 
+# issue #67: least-privilege token. Every job here only reads the repository (checkout) and
+# uploads an artifact (which uses the runner's own token, not GITHUB_TOKEN permissions); a job
+# that ever needs more must say so in its own `permissions:` block instead of widening this.
+permissions:
+  contents: read
+
 on:
   push:
   pull_request:
@@ -31,8 +37,8 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"  # matches docker/grading-api/Dockerfile's own base image
       - name: Install ruff
@@ -45,7 +51,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: lint
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Build every image in the repo (does it compile?)
         run: ./scripts/build-test.sh
 
@@ -54,22 +60,30 @@ jobs:
     runs-on: ubuntu-latest
     needs: build-test
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
       - name: Install bandit
         run: pip install -r docker/grading-api/requirements-dev.txt
       # shellcheck ships preinstalled on GitHub's ubuntu-latest runner image.
+      # issue #67: downloads fail loudly (-f), retry transient errors, and are verified against
+      # a pinned SHA-256 before they are used. The sums are the ones the vendors publish next to
+      # the release (hadolint-Linux-x86_64.sha256, trivy_0.74.0_checksums.txt) and were
+      # re-computed on a fresh download; that is integrity against the vendor's record, not a
+      # signature. Bumping a tool version REQUIRES bumping its sum (a stale one fails the job).
       - name: Install hadolint
         run: |
-          curl -sL "https://github.com/hadolint/hadolint/releases/download/v2.12.0/hadolint-Linux-x86_64" \
-            -o /usr/local/bin/hadolint
-          chmod +x /usr/local/bin/hadolint
+          curl -fsSL --retry 5 --retry-all-errors -o hadolint \
+            "https://github.com/hadolint/hadolint/releases/download/v2.12.0/hadolint-Linux-x86_64"
+          echo "56de6d5e5ec427e17b74fa48d51271c7fc0d61244bf5c90e828aab8362d55010  hadolint" | sha256sum -c -
+          sudo install -m 0755 hadolint /usr/local/bin/hadolint
       - name: Install trivy
         run: |
-          curl -sL "https://github.com/aquasecurity/trivy/releases/download/v0.74.0/trivy_0.74.0_Linux-64bit.tar.gz" \
-            | tar -xz -C /usr/local/bin trivy
+          curl -fsSL --retry 5 --retry-all-errors -o trivy.tar.gz \
+            "https://github.com/aquasecurity/trivy/releases/download/v0.74.0/trivy_0.74.0_Linux-64bit.tar.gz"
+          echo "2ae6fe3ee734b7fdf11335663e18c75ea12dccc76062f09f164a3b0f8be4371a  trivy.tar.gz" | sha256sum -c -
+          sudo tar -xz -C /usr/local/bin -f trivy.tar.gz trivy
       - name: Security Scan (bandit, shellcheck, hadolint, trivy)
         run: ./scripts/security-scan.sh
 
@@ -78,15 +92,15 @@ jobs:
     runs-on: ubuntu-latest
     needs: security-scan
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
       - name: Unit test grading-api's state machine (issue #8)
         run: ./scripts/test-grading-api.sh
       - name: Upload coverage report (issue #101)
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: grading-api-coverage
           path: docker/grading-api/coverage.xml
@@ -95,9 +109,9 @@ jobs:
     runs-on: ubuntu-latest
     needs: security-scan
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install bats
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq bats
+        run: sudo apt-get -o Acquire::Retries=5 update -qq && sudo apt-get -o Acquire::Retries=5 install -y -qq bats
       - name: BATS test the Kasm workspace launcher scripts (issue #16)
         run: ./scripts/test-shell-scripts.sh
 
@@ -105,8 +119,8 @@ jobs:
     runs-on: ubuntu-latest
     needs: security-scan
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
       - name: Unit test provision-guacamole-session.py (issue #53)
@@ -117,7 +131,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: [unit-test, shell-test, provision-guacamole-session-test]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Smoke test (brings the stack up, checks the endpoints)
         run: ./scripts/smoke-test.sh
 
@@ -125,7 +139,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: [unit-test, shell-test, provision-guacamole-session-test]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Guacamole PoC end-to-end test (Playwright, docker-in-docker)
         run: ./scripts/test-guacamole-integration.sh
 
@@ -133,7 +147,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: [unit-test, shell-test, provision-guacamole-session-test]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Visual regression test (watermark.html + grading-panel.html)
         run: ./scripts/test-visual-regression.sh
       # On a mismatch, the plugin overwrites the baseline in this ephemeral
@@ -143,7 +157,7 @@ jobs:
       # is gitignored and wouldn't otherwise survive past this job.
       - name: Upload visual diff artifacts on failure
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: visual-regression-diffs
           path: docker/viewer/tests/__snapshot_failures__/
@@ -153,8 +167,8 @@ jobs:
     runs-on: ubuntu-latest
     needs: [unit-test, shell-test, provision-guacamole-session-test]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
       - name: Copy-mechanism lockdown test (Weasis export/import/send/Q-R, KasmVNC rich-clipboard DLP)
@@ -164,7 +178,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: [unit-test, shell-test, provision-guacamole-session-test]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Sentinel log-leak test (no credential/PHI value in any nginx log path, issue #94/#93)
         run: ./scripts/test-log-leak.sh
 
@@ -172,7 +186,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: [unit-test, shell-test, provision-guacamole-session-test]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Watermark overlay shape-complexity budget (flicker regression guard)
         run: ./scripts/test-overlay-shape.sh
 
@@ -180,7 +194,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: [unit-test, shell-test, provision-guacamole-session-test]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Watermark overlay modes on a real X server (picom alpha / shape fallback, issue #150)
         run: ./scripts/test-overlay-compositor.sh
 
@@ -215,7 +229,7 @@ jobs:
       - overlay-compositor-test
     if: always()
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Confirm every job succeeded
         env:
           NEEDS_JSON: ${{ toJSON(needs) }}
