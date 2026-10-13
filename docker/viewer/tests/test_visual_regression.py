@@ -62,6 +62,7 @@ import urllib.error
 import urllib.request
 
 import pytest
+from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
 GRADING_API_URL = os.environ.get("GRADING_API_URL", "http://localhost:8080/api")
 COORDINATOR_KEY = os.environ["GRADING_COORDINATOR_KEY"]
@@ -103,7 +104,7 @@ def _open(page, base_url: str, path: str, token: str, student_id: str, session_i
 def _submit_learning(page):
     page.fill("#text-input", "Przykładowa ocena studenta -- tekst wolny, nieoceniany.")
     page.click("#submit-btn")
-    page.wait_for_selector("#next-btn", timeout=15000)
+    _wait_for(page, "#next-btn", "after submitting the learning answer")
 
 
 def _submit_structured(page):
@@ -113,9 +114,27 @@ def _submit_structured(page):
     page.wait_for_timeout(500)  # feedback render is synchronous, but give layout a moment to settle
 
 
+def _wait_for(page, selector, what):
+    """Wait for `selector`; on a timeout fail with what the panel was actually showing, so an
+    intermittent CI failure (a slow resync, an API error screen) names itself instead of ending
+    in a bare Playwright TimeoutError."""
+    try:
+        page.wait_for_selector(selector, timeout=15000)
+    except PlaywrightTimeoutError:
+        shown = " ".join(page.inner_text("#grading-panel").split())[:300]
+        pytest.fail(f"{what}: '{selector}' did not appear within 15 s; the panel shows: {shown!r}")
+
+
 def _advance_to_next_case(page):
+    """Click "next case" and wait until the NEXT case's form is really on screen.
+
+    Waiting for "any panel button" (the previous version) returned at once, because the old
+    #next-btn is itself a panel button; the following select_option/fill then raced the re-render
+    and, when the re-render was slow, ran into Playwright's 30 s default timeout. Now: the old
+    button must be gone, and the new form's submit button must be there."""
     page.click("#next-btn")
-    page.wait_for_selector("#grading-panel button", timeout=15000)
+    page.wait_for_selector("#next-btn", state="detached", timeout=15000)
+    _wait_for(page, "#submit-btn", "after clicking the next-case button")
 
 
 @pytest.fixture(params=["watermark.html", "grading-panel.html"])
