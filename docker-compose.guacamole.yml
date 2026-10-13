@@ -36,7 +36,7 @@
 
 services:
   guacamole-db:
-    image: postgres:16-alpine
+    image: postgres:16-alpine@sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea
     container_name: ipcmc-guacamole-db
     restart: unless-stopped
     environment:
@@ -59,7 +59,7 @@ services:
       - ipcmc-internal
 
   guacd:
-    image: guacamole/guacd:1.6.0
+    image: guacamole/guacd:1.6.0@sha256:8974eaa9ba32f713daf311e7cc8cd7e4cdfba1edea39eed75524e78ef4b08f4f
     container_name: ipcmc-guacd
     restart: unless-stopped
     # issue #69: guacd is ready when it accepts a TCP connection on its port 4822 (busybox nc).
@@ -73,7 +73,7 @@ services:
       - ipcmc-internal
 
   guacamole:
-    image: guacamole/guacamole:1.6.0
+    image: guacamole/guacamole:1.6.0@sha256:f344085e618bb05e22b964b0208dbd06d3468275bac70206f93805245e067b40
     container_name: ipcmc-guacamole
     restart: unless-stopped
     # issue #69: do not start the web app before its database and guacd are ready.
