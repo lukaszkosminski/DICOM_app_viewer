@@ -14,17 +14,39 @@
 set -uo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.." || exit 1
 
+# SAFETY (review of #219, pattern from #214): run under a DEDICATED compose
+# project so `down -v` can only ever delete THIS script's own volumes --
+# never the ones of the repo's default project, where a real-data stack may
+# live. DOCKER_BIN is overridable for a future bats guard test.
+DOCKER_BIN="${DOCKER_BIN:-docker}"
+COMPOSE_PROJECT="degraded-test"
+COMPOSE=("$DOCKER_BIN" compose -p "$COMPOSE_PROJECT")
+
 status=0
 CREATED_ENV=0
 CREATED_NETWORK=0
 
 cleanup() {
-  echo "--- tearing down ---"
-  docker compose down -v >/dev/null 2>&1
+  echo "--- tearing down (project $COMPOSE_PROJECT only) ---"
+  "${COMPOSE[@]}" down -v >/dev/null 2>&1 || true
   [ "$CREATED_ENV" -eq 1 ] && rm -f .env
-  [ "$CREATED_NETWORK" -eq 1 ] && docker network rm kasm_default_network >/dev/null 2>&1
+  [ "$CREATED_NETWORK" -eq 1 ] && docker network rm kasm_default_network >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
+
+# Refuse to start while ANY ipcmc-* container exists (even stopped): the
+# stack uses fixed container names and host ports, so racing a live stack
+# would fail mid-run at best -- and the guard is what makes the -p
+# isolation belt-and-braces instead of the only line of defence.
+names="$("$DOCKER_BIN" ps -a --format '{{.Names}}' 2>/dev/null || true)"
+if printf '%s\n' "$names" | grep -q '^ipcmc-'; then
+  echo "REFUSING to start: containers named ipcmc-* already exist (live or leftover stack)." >&2
+  echo "Nothing here was created or removed. Tear down or stop that stack first, or work in a" >&2
+  echo "quarantined environment -- this script will not share names or ports with it." >&2
+  trap - EXIT
+  exit 2
+fi
+echo "guard: clear -- no ipcmc-* containers present"
 
 if [ ! -f .env ]; then
   echo "ORTHANC_PASSWORD=$(openssl rand -hex 16)" > .env
@@ -39,8 +61,12 @@ if ! docker network inspect kasm_default_network >/dev/null 2>&1; then
   CREATED_NETWORK=1
 fi
 
-echo "--- docker compose up ---"
-docker compose up -d --build || { echo "compose up failed"; exit 1; }
+echo "--- docker compose up (project $COMPOSE_PROJECT) ---"
+# --wait gates on the stack's own health checks (#69) instead of this
+# script polling --wait-timeout bounds a wedged container to 5 min rather
+# than the job's whole budget. "${COMPOSE[@]}" keeps the -p flag on EVERY
+# compose call below, teardown included.
+"${COMPOSE[@]}" up -d --build --wait --wait-timeout 300 || { echo "compose up failed"; exit 1; }
 
 # --- helpers -------------------------------------------------------------
 
@@ -68,8 +94,9 @@ wait_api_up() { wait_for 200 30 http://localhost:8080/api/healthz; }
 wait_orthanc_up() { wait_for 200 30 -u "orthanc:${ORTHANC_PASSWORD}" http://localhost:8042/system; }
 
 echo "--- initial health ---"
-INIT=$(wait_for 200 30 http://localhost:8080/api/healthz)
-[ "$INIT" = 200 ] && pass "stack came up" "HTTP $INIT" || { fail "stack came up" "HTTP $INIT"; exit 1; }
+# The --wait above already returned only once every health-checked
+# service reported healthy; nothing else to poll here.
+pass "stack came up (compose --wait, project $COMPOSE_PROJECT)" "all health checks green"
 
 # --- 1. rate limit hit (docs/DEGRADED_MODES.md "nginx rate limit") -------
 # 60 concurrent requests at the burst: must produce 429s, and -- the load
@@ -80,8 +107,8 @@ INIT=$(wait_for 200 30 http://localhost:8080/api/healthz)
 echo "--- 1. rate limit: 60-request burst ---"
 sleep 3  # let the token bucket settle after startup traffic
 BURST_DIR=$(mktemp -d)
-for _ in $(seq 1 60); do
-  curl -s --max-time 15 -D "$BURST_DIR/h_$RANDOM$_.txt" -o /dev/null -w '%{http_code}\n' \
+for i in $(seq 1 60); do
+  curl -s --max-time 15 -D "$BURST_DIR/h_$i.txt" -o /dev/null -w '%{http_code}\n' \
     http://localhost:8080/api/healthz >> "$BURST_DIR/codes.txt" &
 done
 wait
@@ -144,7 +171,7 @@ POST_LOCK=$(curl -s -o /dev/null -w '%{http_code}' \
 # that could be mistaken for a real answer -- while the rest of the
 # viewer keeps serving (the isolation claim in the doc).
 echo "--- 3. grading-api down ---"
-docker compose stop grading-api >/dev/null 2>&1
+"${COMPOSE[@]}" stop grading-api >/dev/null 2>&1
 sleep 2
 DOWN_CODE=$(wait_for "|502|504|" 15 http://localhost:8080/api/case)
 if [[ "|502|504|" == *"|$DOWN_CODE|"* ]]; then
@@ -154,7 +181,7 @@ else
 fi
 STATIC_CODE=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/)
 [ "$STATIC_CODE" = 200 ] && pass "viewer static pages unaffected" "HTTP $STATIC_CODE" || fail "viewer static pages unaffected" "HTTP $STATIC_CODE"
-docker compose start grading-api >/dev/null 2>&1
+"${COMPOSE[@]}" start grading-api >/dev/null 2>&1
 RECOVER=$(wait_api_up)
 [ "$RECOVER" = 200 ] && pass "grading-api recovered" "HTTP $RECOVER" || fail "grading-api recovered" "HTTP $RECOVER"
 
@@ -163,7 +190,7 @@ RECOVER=$(wait_api_up)
 # the doc commits to is "the proxy says 502/504 quickly-ish, and grading
 # keeps working independently of Orthanc".
 echo "--- 4. Orthanc down ---"
-docker compose stop orthanc >/dev/null 2>&1
+"${COMPOSE[@]}" stop orthanc >/dev/null 2>&1
 sleep 2
 # nginx takes ~14 s (DNS gone) and up to ~60 s (stale address, connect
 # timeout) -- both documented, both under the 75 s cap here. A hang
@@ -176,7 +203,7 @@ else
 fi
 API_ALIVE=$(wait_for 200 15 http://localhost:8080/api/healthz)
 [ "$API_ALIVE" = 200 ] && pass "grading unaffected by Orthanc outage" "HTTP $API_ALIVE" || fail "grading unaffected by Orthanc outage" "HTTP $API_ALIVE"
-docker compose start orthanc >/dev/null 2>&1
+"${COMPOSE[@]}" start orthanc >/dev/null 2>&1
 RECOVER=$(wait_orthanc_up)
 [ "$RECOVER" = 200 ] && pass "Orthanc recovered" "HTTP $RECOVER" || fail "Orthanc recovered" "HTTP $RECOVER"
 

@@ -23,6 +23,8 @@ degraded mode for "full functionality unavailable"). Related issues:
 | Kasm / Guacamole down | no session can be opened at all | session containers never start; nothing to proxy - this layer failing means "full functionality unavailable" | nothing in-platform (the browser only reaches the streaming layer's own error) | No loss - nothing this session did was ever local; grading state lives only in the DB |
 | Kasm CE licence cap | >5 concurrent sessions refused/queued | Kasm CE permits 5 concurrent sessions (EULA 2.2, non-commercial); the 6th cannot be served (see HOSTING_SIZING.md - 50 sessions require paid Kasm or Guacamole) | streaming layer's own capacity error | n/a |
 | Redis | - | **Does not exist**: there is no Redis dependency anywhere in the stack, so there is no Redis failure mode. Conscious choice, not an oversight - the only stateful services are Orthanc (volume) and grading-api (SQLite volume) | n/a | n/a |
+| Container unhealthy but still running (#206 class) | `docker compose ps` shows `(unhealthy)` next to `Up` | `restart: unless-stopped` is the current policy and does **not** act on healthcheck failures (compose has no autoheal) - the half-dead container keeps running and serving nothing until someone restarts it; the health checks (#69) exist precisely so this is visible in `ps` | depends on the service: grading-api unhealthy = panel error screen, viewer unhealthy = the page itself does not load | No data risk in itself; recovery is a manual `docker compose restart <svc>` (runbook, #88). Conscious gap: no autoheal agent runs |
+| Start-up refused on unwritable grading-db (#209) | `docker compose up` aborts with grading-api's single `CONFIGURATION ERROR: ...` line | `db._check_data_writable()` refuses to serve at all: exit code 2, the same clean-fatal contract as config.py; the repository compose normally never reaches it because the one-shot `grading-db-init` service fixes ownership first - the refusal is the belt for every other way of running the image | platform fully unavailable (fail-closed) - a doctor never gets a half-working screen | Data protected, which is the whole point: no green `/healthz` lying while every first write 500s (the pre-#209 bug this replaced) |
 | nginx rate limit (intended degradation) | clients above 10 r/s sustained | `limit_req zone=api_limit rate=10r/s burst=20 nodelay` on `/api/` answers 429 **at the edge** - the request never reaches grading-api; measured zero 5xx under overload. 429 body is nginx's own HTML (`text/html`), and **no `Retry-After` header is sent** (documented gap below) | panel sees 429 on its next poll/submit; nothing is marked complete | No loss. Rejected requests never touched the app or the DB |
 
 ## Measured overload characteristics
@@ -94,6 +96,8 @@ is testable without a Kasm/Guacamole install:
 | Orthanc down | `:8043` proxy answers 502/504 (never a hang beyond nginx's own 60 s + margin, never a 200); `/api/healthz` still 200 through it |
 | rate limit | 60-request burst produces >= 1 x 429 and **zero 5xx** (no 5xx cascading); 429 carries no `Retry-After` today (pin, see gap above) |
 | Kasm/Weasis startup fail-open (#102) | covered by `docker/kasm-workspace-weasis/custom_startup.bats`: unreachable grading-api retries 3x, logs loudly, never fakes `complete` |
+| unhealthy-but-running container (#206 class) | not tested by design - the test would only prove compose has no autoheal; documented above, recovery is the runbook's (#88) |
+| refused start on unwritable grading-db (#209) | pinned by `docker/grading-api/tests/test_config.py` (SystemExit code 2), not by this compose suite |
 
 Untested by design: Kasm/Guacamole availability and the CE cap need
 real infrastructure CI runners do not have (same boundary as
@@ -102,5 +106,8 @@ real infrastructure CI runners do not have (same boundary as
 ## Consciously undocumented-as-features today (candidate follow-ups)
 
 * No viewer-side error page for a dead Orthanc iframe (blank frame).
-* No `Retry-After` on 429 (paired with panel retry logic).
+* No `Retry-After` on 429 and no distinct 503 `DB_BUSY` for lock timeouts -
+  tracked as #222 (pinned in `scripts/test-degraded-modes.sh` until then).
+* No autoheal for unhealthy-but-running containers (#206 class) - manual
+  `docker compose restart` per the runbooks (#88) is the current recovery.
 * No SLO/alerting numbers - #89.
