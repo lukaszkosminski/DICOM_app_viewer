@@ -19,7 +19,9 @@
 # guacd's VNC client cannot complete an RFB handshake against KasmVNC at
 # all (it serves VNC exclusively over its own websocket-wrapped protocol,
 # never a raw RFB TCP port); guacd needs a real raw-RFB VNC server.
-FROM ubuntu:24.04
+# Base image pinned by tag AND digest (issue #105): the tag says what it is, the digest
+# makes the build repeatable. To update see docs/REPRODUCIBLE_BUILDS.md.
+FROM ubuntu:24.04@sha256:534baea6a22c03a63003dbc8dbe78fe34bc0d7e595d9a9dc9834884ff530eb55
 
 ARG DEBIAN_FRONTEND=noninteractive
 
@@ -85,7 +87,7 @@ RUN apt-get update && \
 ARG WEASIS_VERSION=4.7.3
 ARG WEASIS_SHA256=b796c661cc513fcd8091f0c2385bad6a272489d88ed6fcdf43a8df6bd42024c4
 RUN mkdir -p /usr/share/desktop-directories /usr/share/applications && \
-    curl -fsSL -o /tmp/weasis.deb \
+    curl -fsSL --retry 5 --retry-all-errors -o /tmp/weasis.deb \
       "https://github.com/nroduit/Weasis/releases/download/v${WEASIS_VERSION}/weasis_${WEASIS_VERSION}-1_amd64.deb" && \
     echo "${WEASIS_SHA256}  /tmp/weasis.deb" | sha256sum -c - && \
     apt-get update && \

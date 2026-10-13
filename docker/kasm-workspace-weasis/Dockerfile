@@ -12,7 +12,9 @@
 # in a locked-down exam kiosk; every extra app is extra attack surface.
 # Tag 1.19.0 pinned to match the actual installed Kasm server version
 # (confirmed available via `docker manifest inspect` before using it).
-FROM kasmweb/core-ubuntu-noble:1.19.0
+# Base image pinned by tag AND digest (issue #105): the tag says what it is, the digest
+# makes the build repeatable. To update see docs/REPRODUCIBLE_BUILDS.md.
+FROM kasmweb/core-ubuntu-noble:1.19.0@sha256:69730b0ee6a572635fad9f8cf3ecb3d40fb86e01000f964b2dab719c664f67f4
 
 USER root
 
@@ -31,7 +33,7 @@ USER root
 ARG WEASIS_VERSION=4.7.3
 ARG WEASIS_SHA256=b796c661cc513fcd8091f0c2385bad6a272489d88ed6fcdf43a8df6bd42024c4
 RUN apt-get update && \
-    curl -fsSL -o /tmp/weasis.deb \
+    curl -fsSL --retry 5 --retry-all-errors -o /tmp/weasis.deb \
       "https://github.com/nroduit/Weasis/releases/download/v${WEASIS_VERSION}/weasis_${WEASIS_VERSION}-1_amd64.deb" && \
     echo "${WEASIS_SHA256}  /tmp/weasis.deb" | sha256sum -c - && \
     apt-get install -y /tmp/weasis.deb && \
