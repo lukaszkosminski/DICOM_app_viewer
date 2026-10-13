@@ -233,7 +233,7 @@ class TestGradingPanelStates:
         page.click("#next-btn")
         page.wait_for_selector("#approve-btn", timeout=15000)
         page.click("#approve-btn")
-        page.wait_for_selector("#restart-btn", timeout=15000)
+        page.wait_for_selector("#results-title", timeout=15000)
         assert_snapshot(panel_locator)
 
     def test_session_expired_screen(self, page, flow_page, student_id, panel_locator, assert_snapshot, base_url):

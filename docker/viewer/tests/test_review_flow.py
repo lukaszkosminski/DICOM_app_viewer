@@ -42,7 +42,8 @@ def _items(n_learning=1, n_assessment=1, n_test=1, with_truth=False):
 class Api:
     """Route mocks; counts calls so tests can assert what the panel did and did not request."""
 
-    def __init__(self, page, finalized=False, finalize_status=200, n=1):
+    def __init__(self, page, finalized=False, finalize_status=200, n=1, reset_enabled=False):
+        self.reset_enabled = reset_enabled
         self.finalized = finalized
         self.finalize_status = finalize_status
         self.n = n
@@ -71,6 +72,7 @@ class Api:
                 "test_correct": 0,
                 "accuracy": 0.0,
                 "breakdown": [],
+                "reset_enabled": self.reset_enabled,
                 "items": _items(self.n, self.n, self.n, with_truth=True),
             },
         )
@@ -115,7 +117,7 @@ def test_approval_reveals_the_correct_answers_and_the_score(page, base_url, path
     api = Api(page, n=2)  # two cases per stage: one right, one wrong
     _open(page, base_url, path)
     page.click("#approve-btn")
-    page.wait_for_selector("#restart-btn")
+    page.wait_for_selector("#results-title")
     text = page.inner_text("#grading-panel")
     assert "Wyniki końcowe" in text and "Wynik testu: 0 / 2" in text
     assert "Kategoria referencyjna" in text and "Niepoprawnie" in text and "Poprawnie" in text
@@ -128,7 +130,7 @@ def test_a_double_click_sends_exactly_one_approval(page, base_url, path):
     api = Api(page)
     _open(page, base_url, path)
     page.dblclick("#approve-btn")
-    page.wait_for_selector("#restart-btn")
+    page.wait_for_selector("#results-title")
     assert api.calls.count("finalize") == 1
 
 
@@ -143,7 +145,7 @@ def test_a_failed_approval_keeps_the_review_and_can_be_retried(page, base_url, p
     assert "Podsumowanie odpowiedzi" in page.inner_text("#grading-panel")
     api.finalize_status = 200
     page.click("#approve-btn")
-    page.wait_for_selector("#restart-btn")
+    page.wait_for_selector("#results-title")
 
 
 @pytest.mark.parametrize("path", PAGES)
@@ -158,7 +160,7 @@ def test_an_expired_session_during_approval_shows_the_expiry_message(page, base_
 def test_already_approved_goes_straight_to_the_reveal_after_a_reload(page, base_url, path):
     Api(page, finalized=True)
     page.goto(f"{base_url}/{path}?student_id=T&session_id=1#token={TOKEN}")
-    page.wait_for_selector("#restart-btn", timeout=15000)
+    page.wait_for_selector("#results-title", timeout=15000)
     assert "Wyniki końcowe" in page.inner_text("#grading-panel")
 
 
@@ -166,7 +168,7 @@ def test_already_approved_goes_straight_to_the_reveal_after_a_reload(page, base_
 def test_api_data_never_injects_markup(page, base_url, path):
     Api(page, finalized=True)
     page.goto(f"{base_url}/{path}?student_id=T&session_id=1#token={TOKEN}")
-    page.wait_for_selector("#restart-btn", timeout=15000)
+    page.wait_for_selector("#results-title", timeout=15000)
     assert page.evaluate("window.__pwned") is None
     assert page.locator("#grading-panel script").count() == 0
     assert page.locator("#grading-panel b").count() == 0
@@ -185,3 +187,20 @@ def test_a_130_case_exam_scrolls_inside_the_panel(page, base_url, path):
     assert box[0] > box[1] and box[2] in ("auto", "scroll")
     page.locator("#approve-btn").scroll_into_view_if_needed()
     assert page.locator("#approve-btn").is_visible()
+
+
+@pytest.mark.parametrize("path", PAGES)
+def test_the_restart_button_exists_only_when_the_server_allows_starting_over(page, base_url, path):
+    """Issue #98: starting over deletes the recorded answers, so it is off unless the server says so."""
+    Api(page, finalized=True, reset_enabled=False)
+    page.goto(f"{base_url}/{path}?student_id=T&session_id=1#token={TOKEN}")
+    page.wait_for_selector("#results-title", timeout=15000)
+    assert page.locator("#restart-btn").count() == 0
+    assert "Rozpocznij od początku" not in page.inner_text("#grading-panel")
+
+
+@pytest.mark.parametrize("path", PAGES)
+def test_the_restart_button_appears_when_enabled(page, base_url, path):
+    Api(page, finalized=True, reset_enabled=True)
+    page.goto(f"{base_url}/{path}?student_id=T&session_id=1#token={TOKEN}")
+    page.wait_for_selector("#restart-btn", timeout=15000)

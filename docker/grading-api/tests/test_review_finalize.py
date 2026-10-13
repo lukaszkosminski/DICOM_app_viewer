@@ -133,7 +133,7 @@ def test_approval_belongs_to_one_student(client, mint_token):
     assert client.get("/results", headers={H: b}).json() == {"complete": True, "finalized": False}
 
 
-def test_reset_clears_the_approval_so_a_new_run_starts_unapproved(client, mint_token):
+def test_reset_clears_the_approval_so_a_new_run_starts_unapproved(client, mint_token, reset_on):
     token = mint_token("stu_reset")
     _walk_to_complete(client, token)
     _finalize(client, token)
