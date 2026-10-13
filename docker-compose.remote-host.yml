@@ -40,6 +40,25 @@ services:
     image: orthancteam/orthanc:26.9.1@sha256:d2705f2c56547e55ce9bc2250fd22d05d326493b3f3d9fa191ecb7db8ca6b5a2
     container_name: ipcmc-orthanc
     restart: unless-stopped
+    # issue #69: readiness, not just "the process started". Orthanc answers /system once its
+    # database is open. The image has python3 but no curl/wget, so the probe is a Python
+    # one-liner; it authenticates with the container's own ORTHANC_PASSWORD (read from the
+    # environment, so it never appears on a command line). Generous start_period: the first
+    # start on an existing large store can take a while.
+    healthcheck:
+      test:
+        - CMD
+        - python3
+        - -c
+        - |
+          import base64, os, sys, urllib.request
+          req = urllib.request.Request("http://127.0.0.1:8042/system")
+          req.add_header("Authorization", "Basic " + base64.b64encode(("orthanc:" + os.environ["ORTHANC_PASSWORD"]).encode()).decode())
+          sys.exit(0 if urllib.request.urlopen(req, timeout=3).status == 200 else 1)
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 40s
     environment:
       - ORTHANC_PASSWORD=${ORTHANC_PASSWORD:?Set ORTHANC_PASSWORD in .env -- see .env.example}
     volumes:
@@ -50,10 +69,53 @@ services:
     ports:
       - "${BIND_ADDR:-0.0.0.0}:8042:8042"
 
+  # One-shot, runs before grading-api on every `docker compose up` (follow-up to issue #51).
+  # grading-api runs as uid 10001; a `grading-db` volume created by an older (root) image is
+  # root-owned and SQLite then fails on the first WRITE with "attempt to write a readonly
+  # database" while /healthz (a read) stays green. This service makes the volume owned by 10001
+  # once and is idempotent (a no-op on a volume that is already right). It is root, but only
+  # for a second, and as small as it can be: no network, read-only root filesystem, every
+  # capability dropped except CHOWN. grading-api itself ALSO refuses to start when its data
+  # volume is not writable (db._check_data_writable), which covers running the image without
+  # this Compose file.
+  grading-db-init:
+    image: alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc
+    container_name: ipcmc-grading-db-init
+    user: "0:0"
+    command: ["chown", "-R", "10001:10001", "/data"]
+    volumes:
+      - grading-db:/data
+    network_mode: none
+    read_only: true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+    security_opt:
+      - no-new-privileges:true
+    restart: "no"
+
   grading-api:
     build: ./docker/grading-api
     container_name: ipcmc-grading-api
     restart: unless-stopped
+    # follow-up to #51: wait for the one-shot ownership fix of the data volume.
+    depends_on:
+      grading-db-init:
+        condition: service_completed_successfully
+    # issue #69: readiness probe = grading-api's own GET /healthz (checks the database
+    # connection). python:3.12-slim has no curl, so urllib; any non-2xx or connection error
+    # raises and the probe fails.
+    healthcheck:
+      test:
+        - CMD
+        - python3
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=3)"
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
     environment:
       # Shared secret with scripts/create-session.py -- the only client
       # allowed to mint a session token (POST /session). No default here
@@ -71,14 +133,38 @@ services:
       - ./local:/local:ro
     networks:
       - ipcmc-internal
+    # issue #51 hardening -- identical rationale to the same block in
+    # docker-compose.yml (non-root images, comments there explain each
+    # line); kept explicit here because this file is deliberately a full
+    # standalone, not an override.
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:size=32m,mode=1777
 
   viewer:
     build: ./docker/viewer
     container_name: ipcmc-viewer
     restart: unless-stopped
+    # issue #69: start only once both backends answer their health probes, not as soon as
+    # their processes exist (the race scripts/smoke-test.sh works around with retry loops;
+    # those stay as defence in depth).
     depends_on:
-      - orthanc
-      - grading-api
+      orthanc:
+        condition: service_healthy
+      grading-api:
+        condition: service_healthy
+    # issue #69: the viewer is healthy when nginx serves AND can reach grading-api through
+    # its own /api/ proxy (busybox wget exists in the image; no extra package needed).
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/api/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
     environment:
       - ORTHANC_PASSWORD=${ORTHANC_PASSWORD:?Set ORTHANC_PASSWORD in .env -- see .env.example}
     ports:
@@ -86,6 +172,18 @@ services:
       - "${BIND_ADDR:-0.0.0.0}:8043:8043"
     networks:
       - ipcmc-internal
+    # issue #51 hardening -- see docker-compose.yml's viewer block for the
+    # full rationale (uid-101 nginx, >1024 ports, conf.d/cache/tmp as the
+    # only writable paths, logs via /dev/stderr+/dev/stdout).
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+      - /etc/nginx/conf.d:size=4m,uid=101,gid=101,mode=0755
+      - /var/cache/nginx:size=32m,uid=101,gid=101,mode=0755
 
 networks:
   ipcmc-internal:

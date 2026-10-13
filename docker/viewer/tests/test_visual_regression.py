@@ -90,6 +90,14 @@ def _open(page, base_url: str, path: str, token: str, student_id: str, session_i
     page.set_viewport_size(VIEWPORT)
     page.goto(f"{base_url}/{path}?student_id={student_id}&session_id={session_id}#token={token}")
     page.wait_for_selector("#grading-panel button", timeout=15000)
+    # Issue #168 flake: the selector above lands as soon as the DOM is
+    # built, which on CI runners can still be BEFORE web fonts have
+    # finished loading -- metrics swap under the first snapshot and the
+    # diff shows pure text re-layout. Wait for the font set to settle
+    # (document.fonts.ready), then two animation frames so any post-font
+    # reflow has been painted before the capture.
+    page.evaluate("() => document.fonts.ready.then(() => true)")
+    page.evaluate("new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))")
 
 
 def _submit_learning(page):
