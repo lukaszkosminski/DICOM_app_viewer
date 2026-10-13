@@ -18,6 +18,25 @@ services:
     image: orthancteam/orthanc:26.9.1@sha256:d2705f2c56547e55ce9bc2250fd22d05d326493b3f3d9fa191ecb7db8ca6b5a2
     container_name: ipcmc-orthanc
     restart: unless-stopped
+    # issue #69: readiness, not just "the process started". Orthanc answers /system once its
+    # database is open. The image has python3 but no curl/wget, so the probe is a Python
+    # one-liner; it authenticates with the container's own ORTHANC_PASSWORD (read from the
+    # environment, so it never appears on a command line). Generous start_period: the first
+    # start on an existing large store can take a while.
+    healthcheck:
+      test:
+        - CMD
+        - python3
+        - -c
+        - |
+          import base64, os, sys, urllib.request
+          req = urllib.request.Request("http://127.0.0.1:8042/system")
+          req.add_header("Authorization", "Basic " + base64.b64encode(("orthanc:" + os.environ["ORTHANC_PASSWORD"]).encode()).decode())
+          sys.exit(0 if urllib.request.urlopen(req, timeout=3).status == 200 else 1)
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 40s
     environment:
       # Sets the "orthanc" user's password directly (image feature, no
       # RegisteredUsers block needed in orthanc.json). Comes from .env
@@ -46,6 +65,19 @@ services:
     build: ./docker/grading-api
     container_name: ipcmc-grading-api
     restart: unless-stopped
+    # issue #69: readiness probe = grading-api's own GET /healthz (checks the database
+    # connection). python:3.12-slim has no curl, so urllib; any non-2xx or connection error
+    # raises and the probe fails.
+    healthcheck:
+      test:
+        - CMD
+        - python3
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=3)"
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
     environment:
       # Shared secret with scripts/create-session.py -- the only client
       # allowed to mint a session token (POST /session). No default here
@@ -64,14 +96,46 @@ services:
       # outside viewer's nginx (which proxies /api/ to this) needs to reach
       # it directly, same least-exposure pattern as orthanc.
       - ipcmc-internal
+    # issue #51 (DoD P38/P113 audit extension): the image runs as uid
+    # 10001 (docker/grading-api/Dockerfile); this is the compose-side half
+    # of the same hardening. cap_drop: [ALL] is provable -- uvicorn binds
+    # 8000, >1024, no NET_BIND_SERVICE needed. read_only:true with the app
+    # writing only to /data (the volume) and /tmp (fresh tmpfs below);
+    # no-new-privileges blocks setuid/suid escalation regardless of what
+    # else leaks. UPGRADE NOTE: a grading-db volume created BEFORE #51 is
+    # root-owned and SQLite cannot write it as 10001 -- one-time fix:
+    #   docker run --rm -v DICOM_app_viewer_grading-db:/d alpine \
+    #     chown -R 10001:10001 /d
+    # (or `docker compose down -v` in dev, which recreates it with the
+    # image's ownership -- smoke-test.sh does exactly that).
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:size=32m,mode=1777
 
   viewer:
     build: ./docker/viewer
     container_name: ipcmc-viewer
     restart: unless-stopped
+    # issue #69: start only once both backends answer their health probes, not as soon as
+    # their processes exist (the race scripts/smoke-test.sh works around with retry loops;
+    # those stay as defence in depth).
     depends_on:
-      - orthanc
-      - grading-api
+      orthanc:
+        condition: service_healthy
+      grading-api:
+        condition: service_healthy
+    # issue #69: the viewer is healthy when nginx serves AND can reach grading-api through
+    # its own /api/ proxy (busybox wget exists in the image; no extra package needed).
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/api/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
     environment:
       # Same password as the orthanc service above -- used to compute the
       # auth-injecting proxy's Basic-Auth header at container start (see
@@ -87,6 +151,26 @@ services:
     networks:
       - ipcmc-internal
       - kasm_default_network
+    # issue #51 (DoD P38/P113 audit extension): the image runs as nginx's
+    # own uid 101 (docker/viewer/Dockerfile). cap_drop: [ALL] is provable:
+    # both ports are >1024. read_only:true works because every path nginx
+    # writes to is now either an explicit tmpfs below or /dev/std*: conf.d
+    # is what 20-envsubst-on-templates.sh renders into at every start,
+    # /var/cache/nginx is the compiled-in client-body/proxy temp dir, and
+    # /tmp holds the pid file.
+    # Logs intentionally go to /dev/stdout + /dev/stderr instead of yet
+    # another tmpfs -- same `docker logs` surface, one less writable path.
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+      # uid/gid-pinned 0755, not 1777: nginx as uid 101 owns these exactly,
+      # no other process in this container ever needs to write them.
+      - /etc/nginx/conf.d:size=4m,uid=101,gid=101,mode=0755
+      - /var/cache/nginx:size=32m,uid=101,gid=101,mode=0755
 
 networks:
   ipcmc-internal:
