@@ -44,6 +44,27 @@ Learning (free text, then the reference report), assessment (category + modifier
 then **"Podsumowanie odpowiedzi"** with their own answers, **"Zatwierdź i zakończ"**, and finally **"Wyniki końcowe"**
 with the correct answers and the score. There is no restart button (see above).
 
+## Showing the results
+
+```
+python3 scripts/export-results.py                  # demo doctors (student ids DEMO_*) from the running stack
+python3 scripts/export-results.py --all            # every student
+python3 scripts/export-results.py --db FILE        # a database file, for example a backup copy
+```
+
+It prints a summary and writes two files under `local/exports/<UTC time>/` (git-ignored, directory mode 0700, files 0600):
+`attempts.csv` (one row per answer, opens in Excel or LibreOffice) and `summary.txt`. The summary shows:
+
+1. **Completion:** doctors started, finished all stages, approved the final review.
+2. **Per doctor:** assessment and test accuracy, median time per case, total time.
+3. **Confusion matrix:** the true Lung-RADS category (rows) against the doctor's category (columns), so you can see which
+   categories are mixed up (for example 4A answered as 4B). Modifier S agreement is reported separately because it is not part of the verdict.
+4. **Per case:** how many answered, the share correct, median time, which shows the hard cases.
+
+Notes: the export is read-only (it never changes the database) and contains only the pseudonymous student ids, no patient data.
+`attempts.csv` also contains the answer key (ground truth), so share it with the coordinator and the researchers only. The free-text
+answers of the learning stage are left out unless you add `--include-text`.
+
 ## After the demo
 
 - Nothing is deleted automatically: the `DEMO_*` students and their answers remain in the grading database. They are test data;
