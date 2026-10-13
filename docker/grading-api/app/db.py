@@ -281,6 +281,13 @@ def _migrate_existing_schema(conn):
                 (time.time(),),
             )
             conn.commit()
+        if "finalized_at" not in cols:
+            # issue #202: purely additive and nullable, existing rows stay untouched
+            # (a doctor who had already finished simply has not approved yet, so the
+            # new review screen is what they see next). The pre-migration backup of
+            # _migration_needed() below runs first.
+            conn.execute("ALTER TABLE progress ADD COLUMN finalized_at REAL")
+            conn.commit()
 
     if "submissions" in tables:
         has_unique = any(row[2] for row in conn.execute("PRAGMA index_list(submissions)").fetchall())
@@ -377,6 +384,10 @@ def _migration_needed(conn) -> bool:
     if "cases" in tables:
         if "version" not in {row[1] for row in conn.execute("PRAGMA table_info(cases)").fetchall()}:
             return True
+    if "progress" in tables and "finalized_at" not in {
+        row[1] for row in conn.execute("PRAGMA table_info(progress)").fetchall()
+    }:
+        return True  # issue #202: back up real data before adding the column too
     if "submissions" in tables:
         if not any(row[2] for row in conn.execute("PRAGMA index_list(submissions)").fetchall()):
             return True
@@ -465,6 +476,10 @@ def init_db():
             stage TEXT NOT NULL,
             case_order_index INTEGER NOT NULL,
             case_assigned_at REAL NOT NULL,
+            -- issue #202: set once, by POST /finalize, when the doctor approves the end-of-exam
+            -- review. NULL = not approved yet: /results then reveals no ground truth and no
+            -- score. Deleted together with the row by /reset (a new run starts unapproved).
+            finalized_at REAL,
             -- issue #99, see cases CHECK: fresh-install scope, API-side
             -- Literal covers existing databases.
             CHECK (stage IN ('learning', 'assessment', 'test', 'complete'))

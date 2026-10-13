@@ -90,6 +90,14 @@ def _open(page, base_url: str, path: str, token: str, student_id: str, session_i
     page.set_viewport_size(VIEWPORT)
     page.goto(f"{base_url}/{path}?student_id={student_id}&session_id={session_id}#token={token}")
     page.wait_for_selector("#grading-panel button", timeout=15000)
+    # Issue #168 flake: the selector above lands as soon as the DOM is
+    # built, which on CI runners can still be BEFORE web fonts have
+    # finished loading -- metrics swap under the first snapshot and the
+    # diff shows pure text re-layout. Wait for the font set to settle
+    # (document.fonts.ready), then two animation frames so any post-font
+    # reflow has been painted before the capture.
+    page.evaluate("() => document.fonts.ready.then(() => true)")
+    page.evaluate("new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))")
 
 
 def _submit_learning(page):
@@ -208,7 +216,9 @@ class TestGradingPanelStates:
         _submit_structured(page)
         assert_snapshot(panel_locator)
 
-    def test_results_screen(self, page, flow_page, student_id, token, panel_locator, assert_snapshot, base_url):
+    def test_review_screen(self, page, flow_page, student_id, token, panel_locator, assert_snapshot, base_url):
+        """Issue #202: after the last test case the doctor sees a read-only summary of their own
+        answers (all stages) and the approve button, and NO correct answers yet."""
         _open(page, base_url, flow_page, token, student_id, "vr")
         _submit_learning(page)
         _advance_to_next_case(page)
@@ -216,9 +226,23 @@ class TestGradingPanelStates:
         _advance_to_next_case(page)
         _submit_structured(page)
         page.click("#next-btn")
-        page.wait_for_timeout(1000)  # results screen has no distinctive selector to wait on
+        page.wait_for_selector("#approve-btn", timeout=15000)
         assert_snapshot(panel_locator)
 
+    def test_reveal_screen(self, page, flow_page, student_id, token, panel_locator, assert_snapshot, base_url):
+        """Issue #202: after approval the final screen lists every case with the doctor's answer,
+        the verdict, the reference category and the reference report, plus the score."""
+        _open(page, base_url, flow_page, token, student_id, "vr")
+        _submit_learning(page)
+        _advance_to_next_case(page)
+        _submit_structured(page)
+        _advance_to_next_case(page)
+        _submit_structured(page)
+        page.click("#next-btn")
+        page.wait_for_selector("#approve-btn", timeout=15000)
+        page.click("#approve-btn")
+        page.wait_for_selector("#results-title", timeout=15000)
+        assert_snapshot(panel_locator)
 
     def test_session_expired_screen(self, page, flow_page, student_id, panel_locator, assert_snapshot, base_url):
         """Issue #145: no token anywhere (fresh tab, no fragment) -> the approved message, no retry button."""

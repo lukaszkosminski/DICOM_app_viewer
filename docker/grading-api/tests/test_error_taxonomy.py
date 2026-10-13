@@ -107,7 +107,7 @@ def test_duplicate_submission_has_stable_error_shape(client, mint_token):
     _assert_error_shape(resp, 409, "DUPLICATE_SUBMISSION")
 
 
-def test_reset_during_test_stage_has_stable_error_shape(client, mint_token):
+def test_reset_during_test_stage_has_stable_error_shape(client, mint_token, reset_on):
     token = mint_token("stu_reset_blocked")
     # Walk through learning + assessment to reach the test stage.
     for _ in range(2):
