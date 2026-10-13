@@ -87,7 +87,7 @@ RUN apt-get update && \
 ARG WEASIS_VERSION=4.7.3
 ARG WEASIS_SHA256=b796c661cc513fcd8091f0c2385bad6a272489d88ed6fcdf43a8df6bd42024c4
 RUN mkdir -p /usr/share/desktop-directories /usr/share/applications && \
-    curl -fsSL -o /tmp/weasis.deb \
+    curl -fsSL --retry 5 --retry-all-errors -o /tmp/weasis.deb \
       "https://github.com/nroduit/Weasis/releases/download/v${WEASIS_VERSION}/weasis_${WEASIS_VERSION}-1_amd64.deb" && \
     echo "${WEASIS_SHA256}  /tmp/weasis.deb" | sha256sum -c - && \
     apt-get update && \
