@@ -169,7 +169,7 @@ def test_category_rows_follow_the_scale_order_and_unknowns_come_last(page, base_
     _open(page, base_url, path, wait="#approve-btn")
     page.click("#approve-btn")
     page.wait_for_selector("#results-title", timeout=15000)
-    rows = [loc.inner_text() for loc in page.locator("#grading-panel .score-cats td.lr")]
+    rows = page.locator("#grading-panel .score-cats td.lr").all_inner_texts()
     assert rows == ["0", "2", "4A", "4B", "weird"]  # scale order first, unknown last
 
 
