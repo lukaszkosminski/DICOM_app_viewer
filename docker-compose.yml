@@ -117,6 +117,8 @@ services:
       # Optional (issue #87): real cases from a local, git-ignored file instead of the
       # placeholder seed -- see README 'Real study data (local only)'. Empty = placeholders.
       - GRADING_CASES_FILE=${GRADING_CASES_FILE:-}
+      # issue #98: "start over" deletes the doctor's recorded answers; off unless set to 1 (local testing only).
+      - GRADING_RESET_ENABLED=${GRADING_RESET_ENABLED:-0}
     volumes:
       - grading-db:/data
       # ./local holds cases.json (answer key + reports + study UIDs): git-ignored, read-only here.

@@ -30,6 +30,7 @@ enforcement site.
 | `GRADING_COORDINATOR_KEY` | none | yes | yes | config-usera | `config.py`: >= 32 chars, leading/trailing whitespace rejected (#97) | compose (both), `app/config.py`, `create-session.py`, `provision-guacamole-session.py`, `rehearse-migration.py` |
 | `GUACAMOLE_DB_PASSWORD` | none | only for the Guacamole overlay | yes | config-usera | compose `:?` | `docker-compose.guacamole.yml` |
 | `BIND_ADDR` | `0.0.0.0` | no | no | config-usera | none (address literal) | `docker-compose.remote-host.yml` (publishes 8042/8080/8043) — see security note below |
+| `GRADING_RESET_ENABLED` | `0` (off) | no | no | config-usera | `config.py`: 1/true/yes/on or 0/false/no/off (#98); off = `POST /reset` answers 403 `RESET_DISABLED` and the panel shows no restart button | `app/config.py`, `app/main.py`, `docker-compose*.yml` |
 | `GRADING_TOKEN_TTL_SECONDS` | `28800` (8 h) | no | no | config-usera | `config.py`: integer, `1..604800` (#97) | `app/config.py` |
 | `GRADING_DB_PATH` | `/data/grading.db` | no | no | config-usera | none | `app/db.py`, `scripts/rehearse-migration.py` |
 | `GRADING_CASES_FILE` | empty (placeholder cases) | no | path only -- the file it points at holds the answer key: keep it git-ignored, mode 0600 (issue #87) | config-usera | `cases_file.py`: name/field-only errors; startup refuses to boot on a malformed file (`SystemExit`, `db.py`) | compose (both), `app/db.py` -> `app/cases_file.py`, `build-cases-file.py` |

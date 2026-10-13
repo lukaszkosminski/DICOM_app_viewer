@@ -195,6 +195,22 @@ def main() -> int:
             not bad_refs,
             ", ".join(bad_refs),
         )
+        # issue #202: progress.finalized_at is added, nullable, and no existing student is
+        # marked approved (a doctor who had finished before simply has not approved yet)
+        prog_cols = {row[1] for row in c.execute("PRAGMA table_info(progress)")}
+        r.check(
+            "progress has the finalized_at column (issue #202)",
+            "finalized_at" in prog_cols,
+        )
+        if "finalized_at" in prog_cols:
+            approved = c.execute(
+                "SELECT COUNT(*) FROM progress WHERE finalized_at IS NOT NULL"
+            ).fetchone()[0]
+            r.check(
+                "no existing student is marked approved by the migration",
+                approved == 0,
+                f"{approved} row(s)",
+            )
         r.check(
             "no leftover *_old tables",
             not [t for t in after["counts"] if t.endswith("_old")],

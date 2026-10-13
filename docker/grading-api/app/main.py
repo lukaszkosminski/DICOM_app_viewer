@@ -41,7 +41,7 @@ from pydantic import BaseModel, Field
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from . import db
-from .config import COORDINATOR_KEY
+from .config import COORDINATOR_KEY, RESET_ENABLED
 from .errors import AppError, app_error_handler, unhandled_exception_handler, validation_error_handler
 from .logging_config import configure_logging, get_logger, request_id_var
 
@@ -646,6 +646,15 @@ def reset(body: ResetBody):
     sees which case comes next. learning/assessment/complete are
     unaffected -- neither stage is graded, and 'complete' is the
     documented, legitimate way to start a fresh run."""
+    if not RESET_ENABLED:
+        # issue #98: /reset deletes recorded answers. Off unless GRADING_RESET_ENABLED=1 (local
+        # testing). Checked first, but a valid token is still required to learn anything.
+        conn = db.get_connection()
+        try:
+            _resolve_token(conn, body.token)
+        finally:
+            conn.close()
+        raise AppError(403, "RESET_DISABLED", "Starting over is disabled; ask the coordinator for a new session")
     conn = db.get_connection()
     try:
         student_id = _resolve_token(conn, body.token)
@@ -656,6 +665,102 @@ def reset(body: ResetBody):
         conn.execute("DELETE FROM submissions WHERE student_id = ?", (student_id,))
         conn.commit()
         return {"reset": True}
+    finally:
+        conn.close()
+
+
+def _answer_rows(conn, student_id: str):
+    """All of the student's submissions, ordered learning -> assessment -> test and by case
+    position. Reads the frozen snapshot columns (issue #96) plus the case row the submission
+    points at (case_id is the exact version row, which is frozen once answered)."""
+    return conn.execute(
+        """SELECT s.stage, s.submitted_category, s.submitted_modifier_s, s.submitted_text,
+                   s.is_correct, s.ground_truth_category, s.ground_truth_modifier_s,
+                   c.order_index, c.title, c.reference_report,
+                   c.ground_truth_category AS case_category, c.ground_truth_modifier_s AS case_modifier_s
+            FROM submissions s JOIN cases c ON c.id = s.case_id
+            WHERE s.student_id = ?
+            ORDER BY CASE s.stage WHEN 'learning' THEN 0 WHEN 'assessment' THEN 1 ELSE 2 END,
+                     c.order_index""",
+        (student_id,),
+    ).fetchall()
+
+
+def _numbered(rows):
+    """(position within the stage starting at 1, total in the stage, row), in order."""
+    totals: dict = {}
+    for r in rows:
+        totals[r["stage"]] = totals.get(r["stage"], 0) + 1
+    seen: dict = {}
+    for r in rows:
+        seen[r["stage"]] = seen.get(r["stage"], 0) + 1
+        yield seen[r["stage"]], totals[r["stage"]], r
+
+
+def _answer_of(r):
+    if r["stage"] == "learning":
+        return {"text": r["submitted_text"]}
+    return {"category": r["submitted_category"], "modifier_s": bool(r["submitted_modifier_s"])}
+
+
+@app.get("/review")
+def review(x_grading_token: str | None = Header(default=None, alias="X-Grading-Token")):
+    """issue #202: the end-of-exam summary of the doctor's OWN answers (all three stages,
+    read-only). Contains no ground truth, no reference report and no verdict: those come from
+    /results, and only after POST /finalize. Available once the exam is complete, and stays
+    available afterwards."""
+    if not x_grading_token:
+        raise AppError(401, "AUTH_INVALID_TOKEN", "Missing X-Grading-Token header")
+    conn = db.get_connection()
+    try:
+        student_id = _resolve_token(conn, x_grading_token)
+        progress = _get_or_create_progress(conn, student_id)
+        if progress["stage"] != "complete":
+            return {"complete": False}
+        items = [
+            {
+                "stage": r["stage"],
+                "position": pos,
+                "total_in_stage": total,
+                "title": r["title"],
+                "answer": _answer_of(r),
+            }
+            for pos, total, r in _numbered(_answer_rows(conn, student_id))
+        ]
+        return {
+            "complete": True,
+            "finalized": progress["finalized_at"] is not None,
+            "reset_enabled": RESET_ENABLED,
+            "items": items,
+        }
+    finally:
+        conn.close()
+
+
+class FinalizeBody(BaseModel):
+    token: str
+
+
+@app.post("/finalize")
+def finalize(body: FinalizeBody):
+    """issue #202: the doctor approves the end-of-exam review. One-way and idempotent: the first
+    call records the moment, later calls change nothing. Refused (409) until the exam is complete.
+    After this, GET /results reveals the correct answers and the score."""
+    conn = db.get_connection()
+    try:
+        student_id = _resolve_token(conn, body.token)
+        progress = _get_or_create_progress(conn, student_id)
+        if progress["stage"] != "complete":
+            raise AppError(409, "FINALIZE_NOT_COMPLETE", "The exam is not complete yet")
+        if progress["finalized_at"] is not None:
+            return {"finalized": True, "already_finalized": True}
+        conn.execute(
+            "UPDATE progress SET finalized_at = ? WHERE student_id = ? AND finalized_at IS NULL",
+            (db.now(), student_id),
+        )
+        conn.commit()
+        logger.info("exam_finalized")
+        return {"finalized": True, "already_finalized": False}
     finally:
         conn.close()
 
@@ -671,35 +776,54 @@ def results(x_grading_token: str | None = Header(default=None, alias="X-Grading-
         progress = _get_or_create_progress(conn, student_id)
         if progress["stage"] != "complete":
             return {"complete": False}
+        if progress["finalized_at"] is None:
+            # issue #202: nothing about the correct answers or the score before the doctor has
+            # approved the review (POST /finalize). Before this, the test ground truth was
+            # returned as soon as the exam was complete; the panel just did not show it.
+            return {"complete": True, "finalized": False}
 
-        # issue #96: reads ONLY the submission's own frozen snapshot --
-        # no JOIN to cases anymore. A later GT change takes the form of a
-        # new case version, which by construction cannot alter these rows;
-        # the audit sec-3.2 record (ground_truth 4B vs submitted 4A vs
-        # correct:true) is now impossible by the data model itself.
-        rows = conn.execute(
-            """SELECT is_correct, ground_truth_category, submitted_category
-               FROM submissions
-               WHERE student_id = ? AND stage = 'test'""",
-            (student_id,),
-        ).fetchall()
-
-        total = len(rows)
-        correct = sum(1 for r in rows if r["is_correct"])
+        # issue #96: reads ONLY the submission's own frozen snapshot for the graded stages --
+        # a later ground-truth change is a new case version and cannot alter these rows.
+        rows = _answer_rows(conn, student_id)
+        test_rows = [r for r in rows if r["stage"] == "test"]
+        total = len(test_rows)
+        correct = sum(1 for r in test_rows if r["is_correct"])
         breakdown = [
             {
                 "ground_truth": r["ground_truth_category"],
                 "submitted": r["submitted_category"],
                 "correct": bool(r["is_correct"]),
             }
-            for r in rows
+            for r in test_rows
         ]
+        items = []
+        for pos, stage_total, r in _numbered(rows):
+            graded = r["stage"] != "learning"
+            # graded stages: the frozen snapshot; learning has none, so the case row (reference only)
+            category = r["ground_truth_category"] if graded and r["ground_truth_category"] else r["case_category"]
+            modifier = r["ground_truth_modifier_s"] if graded and r["ground_truth_category"] else r["case_modifier_s"]
+            items.append(
+                {
+                    "stage": r["stage"],
+                    "position": pos,
+                    "total_in_stage": stage_total,
+                    "title": r["title"],
+                    "answer": _answer_of(r),
+                    "ground_truth_category": category,
+                    "ground_truth_modifier_s": bool(modifier),
+                    "correct": bool(r["is_correct"]) if graded and r["is_correct"] is not None else None,
+                    "reference_report": r["reference_report"],
+                }
+            )
         return {
             "complete": True,
+            "finalized": True,
             "test_total": total,
             "test_correct": correct,
             "accuracy": (correct / total) if total else None,
             "breakdown": breakdown,
+            "reset_enabled": RESET_ENABLED,
+            "items": items,
         }
     finally:
         conn.close()
