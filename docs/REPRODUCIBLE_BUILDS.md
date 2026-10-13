@@ -8,6 +8,7 @@ Status: issue #105 (supply chain and releases). Scope: what is pinned, how to up
 |---|---|---|
 | Base images | the `FROM` line of every `docker/*/Dockerfile` | `name:tag@sha256:<digest>` |
 | Orthanc image | `docker-compose.yml`, `docker-compose.remote-host.yml` | `name:tag@sha256:<digest>` (issue #50) |
+| Guacamole PoC stack images (postgres, guacd, webapp) | `docker-compose.guacamole.yml` | `name:tag@sha256:<digest>` (issue #105 follow-up; `postgres:16-alpine` alone used to float with the tag) |
 | Weasis `.deb` | `docker/kasm-workspace-weasis/Dockerfile`, `docker/guacamole-weasis/Dockerfile` | version plus SHA-256, checked with `sha256sum -c` (issue #50) |
 | Python packages of grading-api | `docker/grading-api/requirements.lock` | every package, including transitive ones, with SHA-256 hashes; installed with `pip --require-hashes` |
 

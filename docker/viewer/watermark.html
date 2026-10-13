@@ -19,6 +19,8 @@
   }
   #grading-panel h2 { margin:0 0 4px; font-size:16px; }
   #grading-panel h3 { margin:12px 0 4px; font-size:14px; }
+  #grading-panel h4 { margin:8px 0 2px; font-size:13px; }
+  #grading-panel details summary { cursor:pointer; color:#ccc; }
   #grading-panel p { margin:4px 0; color:#ccc; }
   #grading-panel textarea, #grading-panel select {
     width:100%; box-sizing:border-box; margin:8px 0;
@@ -45,6 +47,9 @@
   }
   .answer-box.reference { background:#1a2a1f; border-color:#3a5a40; }
   .answer-box p { margin:0; white-space:pre-wrap; }
+  /* issue #201 (radiologist's request): the Lung-RADS scale is shown in bold -- the category
+     choices, the reference category, and category mentions inside the reference report. */
+  #grading-panel select, #grading-panel select option, #grading-panel strong.lr { font-weight:700; }
 
   /* mix-blend-mode:difference guarantees contrast against ANY underlying
      content (white page -> dark text, black page -> light text, any color
@@ -229,6 +234,19 @@
     return div.innerHTML;
   }
 
+  // issue #201: bold the Lung-RADS category mentions in a piece of text.
+  // INPUT MUST ALREADY BE escapeHtml()-ed: the only markup this adds is
+  // <strong class="lr">, so nothing in a report (or any data) can inject HTML.
+  // Matches "Lung-RADS 4A", "Lung-RADS kategoria 3", "LR-4B", "LR 2S" and the
+  // Polish "kategoria/kategorii/kategorie/kategorię 4A" (category 0-3, 4A, 4B, 4X, optional S).
+  // The real reports' exact wording is not known to the developers (they are never
+  // opened), so the pattern is deliberately one constant: extend it from the
+  // owner's feedback, do not scatter variants.
+  const LUNG_RADS_MENTION = /\b((?:Lung-?RADS|Lung-?Rads|LR)[\s-]*(?:[Kk]ategori[aięy]\s*)?(?:[0-3]|4[ABX])(?:\s?S)?|[Kk]ategori[aięy]\s+(?:[0-3]|4[ABX])(?:\s?S)?)(?![0-9A-Za-z])/g;
+  function boldLungRads(escaped) {
+    return escaped.replace(LUNG_RADS_MENTION, '<strong class="lr">$1</strong>');
+  }
+
   // issue #99: exception-/server-derived strings are never interpolated
   // into an innerHTML template again -- showError builds the node through
   // the DOM API and writes the message via textContent, so even a value
@@ -275,7 +293,7 @@
       }
       const data = await res.json();
       if (data.complete) {
-        await showResults();
+        await showReview();
         return;
       }
       currentCase = data;
@@ -394,12 +412,12 @@
       html = `<h3>Twoja ocena</h3>
         <div class="answer-box"><p>${escapeHtml(submitted.text)}</p></div>
         <h3>Opis referencyjny (prawdziwa diagnoza)</h3>
-        <div class="answer-box reference"><p>${escapeHtml(result.reference_report)}</p></div>`;
+        <div class="answer-box reference"><p>${boldLungRads(escapeHtml(result.reference_report))}</p></div>`;
     } else if (stage === "assessment") {
       const cls = result.correct ? "feedback-correct" : "feedback-incorrect";
       const label = result.correct ? "Poprawnie" : "Niepoprawnie";
       html = `<h3 class="${cls}">${label}</h3>
-        <p>Kategoria referencyjna: ${escapeHtml(result.ground_truth_category)}${result.ground_truth_modifier_s ? " (S)" : ""}</p>`;
+        <p>Kategoria referencyjna: <strong class="lr">${escapeHtml(result.ground_truth_category)}${result.ground_truth_modifier_s ? " (S)" : ""}</strong></p>`;
     } else {
       html = `<h3>Odpowiedź zapisana.</h3><p>Brak informacji zwrotnej w module testowym.</p>`;
     }
@@ -408,28 +426,129 @@
     document.getElementById("next-btn").addEventListener("click", loadCase);
   }
 
-  async function showResults() {
+  // ---- issue #202: end-of-exam review -> approval -> reveal --------------------------------
+  // After the last case the doctor sees a read-only summary of their OWN answers (all three
+  // stages). Only after "Zatwierdź i zakończ" (POST /api/finalize) does the server release the
+  // correct answers (GET /api/results); the panel never decides this, the server enforces it.
+  // Everything that comes from the API is escaped before it is put into innerHTML.
+  const REVIEW_EXCERPT = 200; // characters of a long learning-stage answer shown before "expand"
+
+  async function apiGetJson(path) {
+    const res = await fetch(path, { headers: { "X-Grading-Token": token } });
+    if (res.status === 401) {
+      throw new SessionExpiredError();
+    }
+    if (!res.ok) {
+      throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+    }
+    return res.json();
+  }
+
+  function answerHtml(item) {
+    const a = item.answer || {};
+    if (item.stage === "learning") {
+      const text = a.text || "";
+      if (text.length <= REVIEW_EXCERPT) {
+        return `<p>${escapeHtml(text)}</p>`;
+      }
+      return `<details><summary>${escapeHtml(text.slice(0, REVIEW_EXCERPT))}…</summary><p>${escapeHtml(text)}</p></details>`;
+    }
+    return `<p>Kategoria <strong class="lr">${escapeHtml(a.category)}</strong> · modyfikator S: ${a.modifier_s ? "Tak" : "Nie"}</p>`;
+  }
+
+  function itemHeading(item) {
+    const stage = STAGE_LABELS[item.stage] || item.stage;
+    return `<h3>${escapeHtml(stage)} · przypadek ${escapeHtml(item.position)} / ${escapeHtml(item.total_in_stage)}</h3><p>${escapeHtml(item.title)}</p>`;
+  }
+
+  async function showReview() {
     try {
-      const res = await fetch("/api/results", { headers: { "X-Grading-Token": token } });
+      const data = await apiGetJson("/api/review");
+      if (!data.complete) {
+        await loadCase();
+        return;
+      }
+      if (data.finalized) {
+        await showReveal();
+        return;
+      }
+      let html = `<h2>Podsumowanie odpowiedzi</h2>
+        <p>Sprawdź swoje odpowiedzi. Po zatwierdzeniu zobaczysz poprawne odpowiedzi, a odpowiedzi nie będzie można zmienić.</p>`;
+      for (const item of data.items) {
+        html += `<div class="answer-box">${itemHeading(item)}${answerHtml(item)}</div>`;
+      }
+      html += `<button id="approve-btn">Zatwierdź i zakończ</button><p id="approve-error" class="error"></p>`;
+      panel.innerHTML = html;
+      document.getElementById("approve-btn").addEventListener("click", approveReview);
+    } catch (err) {
+      if (err instanceof SessionExpiredError) {
+        showSessionExpired();
+        return;
+      }
+      showError("Błąd ładowania podsumowania", err, "retry-btn", "Spróbuj ponownie");
+      document.getElementById("retry-btn").addEventListener("click", showReview);
+    }
+  }
+
+  async function approveReview() {
+    const button = document.getElementById("approve-btn");
+    const errorBox = document.getElementById("approve-error");
+    button.disabled = true; // one click, one request: a double click must not send two
+    try {
+      const res = await fetch("/api/finalize", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token }),
+      });
       if (res.status === 401) {
         throw new SessionExpiredError();
       }
       if (!res.ok) {
         throw new Error(`HTTP ${res.status}: ${res.statusText}`);
       }
-      const data = await res.json();
+      await showReveal();
+    } catch (err) {
+      if (err instanceof SessionExpiredError) {
+        showSessionExpired();
+        return;
+      }
+      // the review stays on screen and can be approved again (the server call is idempotent)
+      errorBox.textContent = `Nie udało się zatwierdzić: ${err.message}`;
+      button.disabled = false;
+    }
+  }
+
+  async function showReveal() {
+    try {
+      const data = await apiGetJson("/api/results");
+      if (!data.complete) {
+        await loadCase();
+        return;
+      }
+      if (!data.finalized) {
+        await showReview();
+        return;
+      }
       const pct = data.accuracy !== null ? `${Math.round(data.accuracy * 100)}%` : "brak danych";
-      // No separate "main screen" exists in this single-page kiosk app (viewer
-      // + grading panel is the whole thing) -- this is the way back once a
-      // student finishes: starts over from a fresh learning-stage case. Also
-      // clears past submissions server-side (see POST /reset) so a repeat run
-      // doesn't leave stale rows skewing a later /results call.
-      panel.innerHTML = `
-        <h2>Wyniki końcowe</h2>
-        <p>Wynik testu: ${escapeHtml(data.test_correct)} / ${escapeHtml(data.test_total)} (${escapeHtml(pct)})</p>
-        <button id="restart-btn">Rozpocznij od początku</button>`;
-      frame.src = "about:blank";
-      document.getElementById("restart-btn").addEventListener("click", async () => {
+      let html = `<h2 id="results-title">Wyniki końcowe</h2>
+        <p>Wynik testu: ${escapeHtml(data.test_correct)} / ${escapeHtml(data.test_total)} (${escapeHtml(pct)})</p>`;
+      for (const item of data.items) {
+        html += `<div class="answer-box">${itemHeading(item)}<h4>Twoja odpowiedź</h4>${answerHtml(item)}`;
+        if (item.correct !== null) {
+          const cls = item.correct ? "feedback-correct" : "feedback-incorrect";
+          html += `<h4 class="${cls}">${item.correct ? "Poprawnie" : "Niepoprawnie"}</h4>`;
+        }
+        html += `<p>Kategoria referencyjna: <strong class="lr">${escapeHtml(item.ground_truth_category)}${item.ground_truth_modifier_s ? " (S)" : ""}</strong></p>
+          <div class="answer-box reference"><p>${boldLungRads(escapeHtml(item.reference_report))}</p></div></div>`;
+      }
+      // issue #98: starting over deletes the recorded answers, so the server only offers it when
+      // GRADING_RESET_ENABLED=1 (local testing); otherwise a new doctor gets a new session.
+      if (data.reset_enabled) {
+        html += `<button id="restart-btn">Rozpocznij od początku</button>`;
+      }
+      panel.innerHTML = html;
+      const restartButton = document.getElementById("restart-btn");
+      if (restartButton) restartButton.addEventListener("click", async () => {
         try {
           const resetRes = await fetch("/api/reset", {
             method: "POST",
@@ -450,7 +569,8 @@
         showSessionExpired();
         return;
       }
-      showError("Błąd ładowania wyników", err);
+      showError("Błąd ładowania wyników", err, "retry-btn", "Spróbuj ponownie");
+      document.getElementById("retry-btn").addEventListener("click", showReveal);
     }
   }
 

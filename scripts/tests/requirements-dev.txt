@@ -11,3 +11,9 @@ pytest==9.0.3
 pyyaml==6.0.3
 pydicom==3.0.2
 openpyxl==3.1.5
+
+# scripts/tests/test_export_results.py (and the grading-api schema it builds on) needs the
+# grading-api's own runtime dependencies plus the test client's HTTP library. Pinned the same
+# way as docker/grading-api/requirements-dev.txt.
+-r ../../docker/grading-api/requirements.txt
+httpx==0.27.2

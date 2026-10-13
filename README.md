@@ -215,7 +215,19 @@ differs (`watermark.html` for Chrome, `grading-panel.html` for Weasis):
    dropdown) + "S" modifier (radio), submit, immediate correct/incorrect
    feedback against ground truth (revealed either way, right or wrong).
 3. **Test (exam)** — same structured inputs, submit, **no** feedback at
-   all until all test-stage cases are done, then a final score summary.
+   all until all test-stage cases are done.
+4. **End-of-exam review (issue #202, from the radiologist's feedback)** —
+   after the last case the doctor sees a read-only summary of their own
+   answers from all three stages ("Podsumowanie odpowiedzi"). Only after
+   **"Zatwierdź i zakończ"** does the app show the correct answers (the
+   reference category and modifier S, right/wrong, the reference report per
+   case) and the test score. The server enforces this, not the page:
+   `GET /review` returns the doctor's own answers only; `POST /finalize`
+   records the approval once (idempotent, 409 until the exam is complete);
+   `GET /results` returns nothing but `{complete, finalized: false}` until
+   then; `POST /reset` clears the approval. The Lung-RADS category names and
+   category mentions in the reference reports are shown in **bold**
+   (issue #201).
 
 **In the Chrome flow**, the grading panel lives in `watermark.html` as a
 sidebar next to the DICOM viewer iframe (same page, no separate route) — on
