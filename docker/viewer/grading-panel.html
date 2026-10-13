@@ -4,6 +4,16 @@
 <meta charset="utf-8">
 <title>IP_CMC Panel oceny</title>
 <style>
+  /* UI polish: stage indicator + score summary (2026-10-13) */
+  .stage-bar { display: flex; align-items: center; gap: 6px; margin: 0 0 10px; font-size: 13px; }
+  .stage-chip { opacity: 0.45; padding: 1px 7px; border: 1px solid #bbb; border-radius: 3px; }
+  .stage-chip.current { opacity: 1; font-weight: 700; border-color: #333; background: #eee; }
+  .stage-arrow { opacity: 0.5; }
+  .score-bar { position: relative; height: 22px; border: 1px solid #333; border-radius: 3px; margin: 6px 0 10px; background: #fff; }
+  .score-fill { height: 100%; background: #4c8; }
+  .score-pct { position: absolute; top: 0; left: 8px; line-height: 22px; font-weight: 700; }
+  .score-cats { border-collapse: collapse; margin-bottom: 10px; }
+  .score-cats th, .score-cats td { border: 1px solid #999; padding: 2px 8px; text-align: left; }
   /* Issue #5 (Grading Panel): trimmed down from watermark.html -- this is
      the DICOM iframe removed, everything else about the grading panel kept
      as-is. Images now come from Weasis itself (a separate native window,
@@ -207,6 +217,46 @@
   const panel = document.getElementById("grading-panel");
   const STAGE_LABELS = { learning: "Nauka", assessment: "Ocena", test: "Test" };
 
+  // UI polish (owner 2026-10-13): compact stage indicator, current chip emphasized.
+  function stageBar(stage) {
+    const arrow = '<span class="stage-arrow" aria-hidden="true">&rarr;</span>';
+    const chips = ["learning", "assessment", "test"].map((s) =>
+      `<span class="stage-chip${s === stage ? " current" : ""}">${STAGE_LABELS[s]}</span>`);
+    return `<div class="stage-bar" role="group" aria-label="Etap egzaminu">${chips.join(arrow)}</div>`;
+  }
+
+  // UI polish: score summary block for the results screen -- percentage bar plus
+  // per-ground-truth-category accuracy. Rows come from /results `breakdown`
+  // (or from finalized-review `items` filtered to the test stage), so the
+  // helper works identically on both pages without any API change.
+  function scoreSummary(data) {
+    let html = "";
+    if (data.accuracy !== null && data.accuracy !== undefined) {
+      const pctN = Math.round(data.accuracy * 100);
+      html += `<div class="score-bar"><div class="score-fill" style="width:${pctN}%"></div>` +
+              `<span class="score-pct">${pctN}%</span></div>`;
+    }
+    const rows = data.breakdown
+      ? data.breakdown.map((b) => ({ gt: b.ground_truth, correct: b.correct }))
+      : (data.items || []).filter((it) => it.stage === "test")
+          .map((it) => ({ gt: it.ground_truth_category, correct: it.correct }));
+    if (!rows.length) return html;
+    const agg = {};
+    for (const r of rows) {
+      const g = String(r.gt);
+      if (!agg[g]) agg[g] = { ok: 0, all: 0 };
+      agg[g].all += 1;
+      if (r.correct) agg[g].ok += 1;
+    }
+    const order = ["0", "1", "2", "3", "4A", "4B", "4X"];
+    const cats = order.filter((c) => agg[c]).concat(Object.keys(agg).filter((k) => !order.includes(k)));
+    html += `<h3 class="score-cats-title">Dokładność wg kategorii</h3><table class="score-cats">` +
+      `<tr><th>Kategoria</th><th>Poprawne</th></tr>` +
+      cats.map((c) => `<tr><td class="lr">${escapeHtml(c)}</td><td>${agg[c].ok} / ${agg[c].all}</td></tr>`).join("") +
+      `</table>`;
+    return html;
+  }
+
   let currentCase = null;
   // issue #99: client-side time_spent_seconds removed (never used -- #29
   // computes time-on-task server-side because Date.now() is editable and
@@ -315,7 +365,7 @@
         </fieldset>
         <button id="submit-btn">Wyślij ocenę</button>`;
     }
-    panel.innerHTML = html;
+    panel.innerHTML = stageBar(data.stage) + html;
     document.getElementById("submit-btn").addEventListener("click", onSubmit);
   }
 
@@ -391,7 +441,7 @@
       html = `<h3>Odpowiedź zapisana.</h3><p>Brak informacji zwrotnej w module testowym.</p>`;
     }
     html += `<button id="next-btn">Następny przypadek</button>`;
-    panel.innerHTML = html;
+    panel.innerHTML = stageBar(stage) + html;
     document.getElementById("next-btn").addEventListener("click", loadCase);
   }
 
@@ -500,7 +550,7 @@
       }
       const pct = data.accuracy !== null ? `${Math.round(data.accuracy * 100)}%` : "brak danych";
       let html = `<h2 id="results-title">Wyniki końcowe</h2>
-        <p>Wynik testu: ${escapeHtml(data.test_correct)} / ${escapeHtml(data.test_total)} (${escapeHtml(pct)})</p>`;
+        <p>Wynik testu: ${escapeHtml(data.test_correct)} / ${escapeHtml(data.test_total)} (${escapeHtml(pct)})</p>${scoreSummary(data)}`;
       for (const item of data.items) {
         html += `<div class="answer-box">${itemHeading(item)}<h4>Twoja odpowiedź</h4>${answerHtml(item)}`;
         if (item.correct !== null) {
