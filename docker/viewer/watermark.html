@@ -4,16 +4,17 @@
 <meta charset="utf-8">
 <title>IP_CMC DICOM Viewer</title>
 <style>
-  /* UI polish: stage indicator + score summary (2026-10-13) */
+  /* UI polish: stage indicator + score summary (2026-10-13), dark theme
+     (panel is #181818/#eee -- p2 review caught the first pass as light-theme) */
   .stage-bar { display: flex; align-items: center; gap: 6px; margin: 0 0 10px; font-size: 13px; }
-  .stage-chip { opacity: 0.45; padding: 1px 7px; border: 1px solid #bbb; border-radius: 3px; }
-  .stage-chip.current { opacity: 1; font-weight: 700; border-color: #333; background: #eee; }
-  .stage-arrow { opacity: 0.5; }
-  .score-bar { position: relative; height: 22px; border: 1px solid #333; border-radius: 3px; margin: 6px 0 10px; background: #fff; }
-  .score-fill { height: 100%; background: #4c8; }
-  .score-pct { position: absolute; top: 0; left: 8px; line-height: 22px; font-weight: 700; }
-  .score-cats { border-collapse: collapse; margin-bottom: 10px; }
-  .score-cats th, .score-cats td { border: 1px solid #999; padding: 2px 8px; text-align: left; }
+  .stage-chip { opacity: 0.45; padding: 1px 7px; border: 1px solid #555; border-radius: 3px; color: #ccc; }
+  .stage-chip.current { opacity: 1; font-weight: 700; color: #eee; border-color: #2d6cdf; background: #2a3a5a; }
+  .stage-arrow { opacity: 0.5; color: #888; }
+  .score-bar { position: relative; height: 22px; border: 1px solid #444; border-radius: 3px; margin: 6px 0 10px; background: #2a2a2a; }
+  .score-fill { height: 100%; background: #2d6cdf; }
+  .score-pct { position: absolute; top: 0; left: 8px; line-height: 22px; font-weight: 700; color: #eee; }
+  .score-cats { border-collapse: collapse; margin-bottom: 10px; color: #eee; }
+  .score-cats th, .score-cats td { border: 1px solid #444; padding: 2px 8px; text-align: left; }
   /* Deterrence, not prevention: see CLAUDE.md for why this is attribution-layer only. */
   html, body { margin:0; padding:0; height:100%; overflow:hidden; background:#000; }
 
