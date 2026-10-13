@@ -21,5 +21,6 @@ bats \
   docker/kasm-workspace-weasis/arrange_windows.bats \
   docker/guacamole-weasis/launch-session.bats \
   scripts/load-local-studies.bats \
+  scripts/test-orthanc-proxy-scope.bats \
   scripts/ci-gate.bats \
   "$@"
