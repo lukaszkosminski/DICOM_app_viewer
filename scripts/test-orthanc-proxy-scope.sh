@@ -20,12 +20,24 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.." || exit 1
 
 ASSERT_SCOPED=0
 PREFLIGHT_ONLY=0
-for arg in "$@"; do
-  case "$arg" in
+SELFTEST=""
+ST_GAPS=0
+ST_ASSERT=0
+while [ "$#" -gt 0 ]; do
+  case "$1" in
     --assert-scoped) ASSERT_SCOPED=1 ;;
     --preflight) PREFLIGHT_ONLY=1 ;;
-    *) echo "usage: $0 [--assert-scoped] [--preflight]" >&2; exit 2 ;;
+    --selftest-mask) SELFTEST="mask" ;;
+    --selftest-exit)
+      SELFTEST="exit"
+      ST_GAPS="${2:-0}"; ST_ASSERT="${3:-0}"
+      case "$ST_GAPS$ST_ASSERT" in
+        *[!0-9]*|"") echo "usage: $0 --selftest-exit <gaps> <assert-scoped> (integers)" >&2; exit 2 ;;
+      esac
+      shift 2 2>/dev/null || shift "$#" ;;
+    *) echo "usage: $0 [--assert-scoped] [--preflight] [--selftest-mask] [--selftest-exit <gaps> <assert-scoped>]" >&2; exit 2 ;;
   esac
+  shift
 done
 
 # SAFETY (p2 review of this PR): run under a DEDICATED compose project so
@@ -63,6 +75,36 @@ preflight() {
   fi
   echo "guard: clear -- no ipcmc-* containers present"
 }
+# Exit contract (item 0 of #195, agreed with p2): gaps are RECORDED and a
+# default run exits 0 -- CI stays green until callers switch + PR-B2. Only
+# --assert-scoped turns recorded gaps red. Exit 2 is reserved for usage and
+# preflight-guard errors. finalize_code <gaps> <assert_scoped> -> code.
+finalize_code() {
+  if [ "$1" -gt 0 ] && [ "$2" -eq 1 ]; then echo 1; else echo 0; fi
+}
+# Path display: never print the derived /s/<key>/ secret or Orthanc internal
+# ids (p2 review: the first pass leaked 43/64 hex chars per scoped line).
+display_path() {
+  local shown="$1"
+  shown="${shown//${KEY_A:-}/<key>}"
+  shown="${shown//${KEY_B:-}/<key>}"
+  printf '%s' "$shown" | sed -E "s#/[0-9a-f]{8}-[0-9a-f-]{20,}#/<id>#g"
+}
+if [ "$SELFTEST" = "mask" ]; then
+  trap - EXIT
+  KEY_A=$(printf "a%.0s" $(seq 1 64))
+  KEY_B=$(printf "b%.0s" $(seq 1 64))
+  display_path "/s/$KEY_A/dicom-web/studies/1.2.826.0.1.3680043.2.1125.01.01/series"
+  echo
+  display_path "/studies/27f7126f-0011-4222-8333-444455556666/archive"
+  echo
+  exit 0
+fi
+if [ "$SELFTEST" = "exit" ]; then
+  trap - EXIT
+  exit "$(finalize_code "$ST_GAPS" "$ST_ASSERT")"
+fi
+
 preflight
 if [ "$PREFLIGHT_ONLY" -eq 1 ]; then
   trap - EXIT
@@ -78,6 +120,10 @@ grep -q '^GRADING_COORDINATOR_KEY=' .env || echo "GRADING_COORDINATOR_KEY=$(open
 source .env
 
 echo "--- bring up the stack (project $COMPOSE_PROJECT), load PUBLIC samples ---"
+# A developer .env may point GRADING_CASES_FILE at REAL case metadata
+# (compose mounts ./local) -- an empty shell variable overrides .env so the
+# throwaway stack can only ever serve the public sample case list.
+export GRADING_CASES_FILE=
 # compose declares kasm_default_network as external (the Kasm installer
 # normally creates it) -- stub it exactly like smoke-test.sh does. The
 # network is shared infrastructure: never deleted on teardown.
@@ -103,6 +149,13 @@ sh_of()  { printf '%s' "$1" | sha256sum | cut -d' ' -f1 | cut -c1-12; }
 
 TOK_A=$(mint BLUET_A) || { echo "mint failed"; exit 1; }
 TOK_B=$(mint BLUET_B) || { echo "mint failed"; exit 1; }
+# Every fresh doctor starts at the SAME first learning case -- advance B one
+# real submit so A keeps the learning case and B holds the assessment one
+# (p2's tested fix from the #214 review).
+CASE_B=$(curl -sf "$API/case" -H "X-Grading-Token: $TOK_B")
+CASE_ID_B=$(printf '%s' "$CASE_B" | python3 -c 'import json,sys; print(json.load(sys.stdin)["case_id"])')
+curl -sf -o /dev/null -X POST "$API/submit" -H "Content-Type: application/json" \
+  -d "{\"token\": \"$TOK_B\", \"case_id\": $CASE_ID_B, \"stage\": \"learning\", \"text\": \"advance\"}" || { echo "could not advance B"; exit 1; }
 UID_A=$(issued_uid "$TOK_A")
 UID_B=$(issued_uid "$TOK_B")
 KEY_A=$(key_of "$TOK_A")
@@ -119,9 +172,19 @@ probe() { # probe <task> <class> <expect blocked|own-ok> <path> [extra curl args
   local out c n verdict="ok"
   out=$(curl -s -o /dev/null -w "%{http_code} %{size_download}" "$@" "${PROXY}${path}")
   c="${out%% *}"; n="${out##* }"
-  if [ "$expect" = "blocked" ] && [ "$c" = "200" ]; then verdict="REACHABLE(gap)"; status=2; fi
-  if [ "$expect" = "own-ok" ] && [ "$c" != "200" ]; then verdict="SCOPED-BROKEN"; status=2; fi
-  printf '%-8s %-6s %-46s code=%s bytes=%s %s\n' "$task" "$class" "${path:0:46}" "$c" "$n" "$verdict"
+  if [ "$expect" = "blocked" ] && [ "$c" = "200" ]; then verdict="REACHABLE(gap)"; status=$((status + 1)); fi
+  if [ "$expect" = "own-ok" ] && [ "$c" != "200" ]; then verdict="SCOPED-BROKEN"; status=$((status + 1)); fi
+  printf '%-8s %-6s %-46s code=%s bytes=%s %s\n' "$task" "$class" "$(display_path "$path")" "$c" "$n" "$verdict"
+}
+# Bulk paths (archive/media/raw file) need only the STATUS code -- request one
+# byte instead of transferring the ~24 MB archive into /dev/null (p2 review).
+probe_bulk() { # same args as probe; 206 counts like 200
+  local task="$1" class="$2" expect="$3" path="$4"; shift 4
+  local c verdict="ok"
+  c=$(curl -s -o /dev/null -r 0-0 -w "%{http_code}" "$@" "${PROXY}${path}")
+  if [ "$expect" = "blocked" ] && { [ "$c" = "200" ] || [ "$c" = "206" ]; }; then verdict="REACHABLE(gap)"; status=$((status + 1)); fi
+  if [ "$expect" = "own-ok" ] && [ "$c" != "200" ] && [ "$c" != "206" ]; then verdict="SCOPED-BROKEN"; status=$((status + 1)); fi
+  printf '%-8s %-6s %-46s code=%s bytes=1(range) %s\n' "$task" "$class" "$(display_path "$path")" "$c" "$verdict"
 }
 
 echo; echo "=== RT-T-01 enumeration ==="
@@ -137,9 +200,9 @@ try: print(json.load(sys.stdin)[0])
 except Exception: print("")')
 if [ -n "$FIRST_ID" ]; then
   echo "legacy /studies listing returned $(printf '%s' "$IDS" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))') internal ids (count only)"
-  probe RT-T-02 legacy blocked "/studies/$FIRST_ID/archive"
-  probe RT-T-02 legacy blocked "/studies/$FIRST_ID/media"
-  probe RT-T-02 scoped blocked "/s/$KEY_A/dicom-web/studies/$UID_B/archive"
+  probe_bulk RT-T-02 legacy blocked "/studies/$FIRST_ID/archive"
+  probe_bulk RT-T-02 legacy blocked "/studies/$FIRST_ID/media"
+  probe_bulk RT-T-02 scoped blocked "/s/$KEY_A/dicom-web/studies/$UID_B/archive"
 else
   echo "RT-T-02 legacy (no /studies listing reachable -- enumeration already closed?)"
 fi
@@ -157,7 +220,7 @@ except Exception: print("")')
   fi
 fi
 if [ -n "$IID" ]; then
-  probe RT-T-03 legacy blocked "/instances/$IID/file"
+  probe_bulk RT-T-03 legacy blocked "/instances/$IID/file"
   probe RT-T-03 legacy blocked "/instances/$IID/tags"
 fi
 probe RT-T-03 scoped blocked "/s/$KEY_A/dicom-web/studies/$UID_B/metadata"
@@ -173,11 +236,12 @@ probe ITEM1 scoped blocked "/s/$KEY_A/dicom-web/studies/$UID_B/series"
 probe ITEM1 scoped own-ok  "/s/$KEY_A/dicom-web/studies/$UID_A/series"
 
 echo
-if [ "$status" -ne 0 ]; then
-  if [ "$ASSERT_SCOPED" -eq 1 ]; then
-    echo "RESULT: FAILED (--assert-scoped): a session reached data it was not issued, or the scoped flow is broken."
-  else
-    echo "RESULT: gaps recorded above (exit 2). Known open state until callers switch + PR-B2; re-run with --assert-scoped once that lands."
-  fi
+FINAL=$(finalize_code "$status" "$ASSERT_SCOPED")
+if [ "$status" -gt 0 ] && [ "$FINAL" -eq 1 ]; then
+  echo "RESULT: FAILED (--assert-scoped): $status gap(s) -- a session reached data it was not issued, or the scoped flow is broken."
+elif [ "$status" -gt 0 ]; then
+  echo "RESULT: $status gap(s) RECORDED above; exit 0 per the item-0 contract (run with --assert-scoped to fail on them). Known open state until callers switch + PR-B2."
+else
+  echo "RESULT: all checks green."
 fi
-exit "$status"
+exit "$FINAL"
