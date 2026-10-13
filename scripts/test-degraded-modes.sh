@@ -97,7 +97,7 @@ fi
 # from a proxy loop; and no Retry-After today (documented gap).
 FIRST_429_HDR=""
 for f in "$BURST_DIR"/h_*.txt; do
-  grep -q '429' "$f" && { FIRST_429_HDR="$f"; break; }
+  grep -q '^HTTP/[0-9.]* 429' "$f" && { FIRST_429_HDR="$f"; break; }
 done
 if [ -n "$FIRST_429_HDR" ] && ! grep -qi 'retry-after' "$FIRST_429_HDR"; then
   pass "429 sent with no Retry-After (documented gap pinned)" "headers of one captured 429"

@@ -95,7 +95,7 @@ is testable without a Kasm/Guacamole install:
 | rate limit | 60-request burst produces >= 1 x 429 and **zero 5xx** (no 5xx cascading); 429 carries no `Retry-After` today (pin, see gap above) |
 | Kasm/Weasis startup fail-open (#102) | covered by `docker/kasm-workspace-weasis/custom_startup.bats`: unreachable grading-api retries 3x, logs loudly, never fakes `complete` |
 
-Ungtested by design: Kasm/Guacamole availability and the CE cap need
+Untested by design: Kasm/Guacamole availability and the CE cap need
 real infrastructure CI runners do not have (same boundary as
 `smoke-test.sh`'s own header comment).
 
