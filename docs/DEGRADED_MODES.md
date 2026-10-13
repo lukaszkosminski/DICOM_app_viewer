@@ -69,9 +69,17 @@ view):
    stuck writer or external process holding the file (backup tool,
    manual session), not organic load - that is the diagnostic to record
    in the runbook (#88).
-5. **nginx rate limit** never bites a real student (a human cannot click
-   10 times per second at the API for long); it only ever fires on a
-   buggy loop or an attacker.
+5. **nginx rate limit** never bites a real *human* (a human cannot click
+   10 times per second at the API for long); it fires on any faster-than-
+   human client pacing. **Observed in the wild, 2026-10-13 (PR #219 CI):**
+   the 72-test Playwright visual-regression suite drives every test from
+   one source IP; its resyncs average just under 10 r/s, so an unlucky
+   run trips the limiter and one test fails showing the panel's own
+   "Błąd ładowania ... 429 ..." screen (see the "flaky visual-regression"
+   follow-up noted in that PR). Same class as a buggy retry loop -- a
+   real client that is not a human -- so the limiter is doing its job;
+   the test suite's pacing is what must adapt (own issue, not this doc's
+   fix).
 
 ## Test coverage
 
