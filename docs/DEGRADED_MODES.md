@@ -73,15 +73,19 @@ view):
    in the runbook (#88).
 5. **nginx rate limit** never bites a real *human* (a human cannot click
    10 times per second at the API for long); it fires on any faster-than-
-   human client pacing. **Observed in the wild, 2026-10-13 (PR #219 CI):**
-   the 72-test Playwright visual-regression suite drives every test from
-   one source IP; its resyncs average just under 10 r/s, so an unlucky
-   run trips the limiter and one test fails showing the panel's own
-   "Błąd ładowania ... 429 ..." screen (see the "flaky visual-regression"
-   follow-up noted in that PR). Same class as a buggy retry loop -- a
-   real client that is not a human -- so the limiter is doing its job;
-   the test suite's pacing is what must adapt (own issue, not this doc's
-   fix).
+   human client pacing. **Observed in the wild, 2026-10-13 (PR #219 CI),
+   measured for this doc:** the Playwright visual-regression suite
+   (92 tests today) drives every test from ONE source IP. One full local
+   run made 188 `/api/` requests across its ~3.5 min window - mean
+   0.9 r/s, 4 r/s over active seconds, **peak second: 18 req/s** (the
+   per-second histogram also shows 12 and 14) - pressed right against the
+   20-request burst allowance, so an unlucky CI second crossing it fails
+   a test on the panel's own "Błąd ładowania ... 429 ..." screen (flake
+   runs listed in #227). Same class as a buggy retry loop -- a real
+   client that is not a human -- so the limiter is doing its job; the
+   test suite's pacing is what must adapt: #222 (client-visible pacing)
+   and #227 (test-side `API_RATE_LIMIT` parameter, production default
+   untouched).
 
 ## Test coverage
 
