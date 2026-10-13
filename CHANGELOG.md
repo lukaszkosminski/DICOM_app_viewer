@@ -23,6 +23,17 @@ the project adheres to [Semantic Versioning](https://semver.org/spec/v2-0-0/).
 
 ## [Unreleased]
 
+- **Panel UI polish (owner request, 2026-10-13).** (1) A stage indicator --
+  "Nauka → Ocena → Test" chips with the current stage emphasized -- now sits
+  above the case form and the per-case feedback on BOTH panel pages
+  (grading-panel.html and watermark.html; identical helper in the shared
+  rendering JS). (2) The results screen gains a score summary above the
+  per-case review list: a percentage bar plus per-ground-truth-category
+  accuracy table (Lung-RADS order, unknown categories appended). Purely
+  frontend -- both derive from the data /results already returns
+  (`breakdown` / finalized `items`); no API change, no version bump.
+  Visual-regression baselines for both pages were regenerated.
+
 - **Follow-ups to #160 (findings N1/N2/N3/S1 from its review).**
   N1: startup configuration failures (pre-migration backup, cases-table
   migration, malformed GRADING_CASES_FILE) now abort like config.py -- one
