@@ -23,6 +23,18 @@ the project adheres to [Semantic Versioning](https://semver.org/spec/v2-0-0/).
 
 ## [Unreleased]
 
+- **Degraded modes documented and pinned by tests (issue #115).**
+  `docs/DEGRADED_MODES.md` records, per critical dependency (grading-api,
+  SQLite lock, Orthanc, Kasm/Guacamole incl. the CE 5-session cap, the
+  non-existent Redis, nginx rate limit), the symptom, the student-visible
+  behaviour and the data behaviour - with the load numbers measured
+  against the live stack (60-request burst: 21x200/39x429/zero 5xx;
+  write under a held exclusive lock: 500 after busy_timeout 5.0s), plus
+  the "what saturates first" order at 50/300 users. `scripts/test-degraded-modes.sh`
+  (CI job `degraded-test`) pins the four testable rows; the documented
+  gaps (blank Orthanc iframe, no Retry-After on 429) are pinned as
+  documented so a future fix must update the doc deliberately.
+
 - **Panel UI polish (owner request, 2026-10-13).** (1) A stage indicator --
   "Nauka → Ocena → Test" chips with the current stage emphasized -- now sits
   above the case form and the per-case feedback on BOTH panel pages

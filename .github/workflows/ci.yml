@@ -17,7 +17,8 @@ name: CI
 # test-grading-api.sh, test-shell-scripts.sh, smoke-test.sh,
 # test-guacamole-integration.sh, test-visual-regression.sh,
 # test-copy-lockdown.sh, test-log-leak.sh, test-overlay-shape.sh,
-# test-overlay-compositor.sh) is runnable identically on a
+# test-overlay-compositor.sh, test-degraded-modes.sh) is runnable
+# identically on a
 # local machine -- this
 # file only handles installing each stage's prerequisites, never
 # duplicates the check logic itself.
@@ -135,6 +136,14 @@ jobs:
       - name: Smoke test (brings the stack up, checks the endpoints)
         run: ./scripts/smoke-test.sh
 
+  degraded-test:
+    runs-on: ubuntu-latest
+    needs: [unit-test, shell-test, provision-guacamole-session-test]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Degraded-mode E2E (issue #115: every documented failure row of docs/DEGRADED_MODES.md holds)
+        run: ./scripts/test-degraded-modes.sh
+
   guacamole-integration-test:
     runs-on: ubuntu-latest
     needs: [unit-test, shell-test, provision-guacamole-session-test]
@@ -221,6 +230,7 @@ jobs:
       - shell-test
       - provision-guacamole-session-test
       - smoke-test
+      - degraded-test
       - guacamole-integration-test
       - visual-regression-test
       - copy-lockdown-test
