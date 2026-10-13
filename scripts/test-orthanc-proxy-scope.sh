@@ -19,18 +19,55 @@ set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.." || exit 1
 
 ASSERT_SCOPED=0
-[ "${1:-}" = "--assert-scoped" ] && ASSERT_SCOPED=1
+PREFLIGHT_ONLY=0
+for arg in "$@"; do
+  case "$arg" in
+    --assert-scoped) ASSERT_SCOPED=1 ;;
+    --preflight) PREFLIGHT_ONLY=1 ;;
+    *) echo "usage: $0 [--assert-scoped] [--preflight]" >&2; exit 2 ;;
+  esac
+done
+
+# SAFETY (p2 review of this PR): run under a DEDICATED compose project so
+# down -v can only ever delete this script's own volumes -- never the ones
+# of the repo's default project, where the owner's real-data stack may
+# live. DOCKER_BIN is overridable for the bats guard test.
+DOCKER_BIN="${DOCKER_BIN:-docker}"
+COMPOSE_PROJECT="bluet-scope"
+COMPOSE=("$DOCKER_BIN" compose -p "$COMPOSE_PROJECT")
 
 PROXY="http://localhost:8043"
 API="http://localhost:8080/api"
 CREATED_ENV=0
 
 cleanup() {
-  echo "--- tearing down ---"
-  docker compose down -v >/dev/null 2>&1 || true
+  echo "--- tearing down (project $COMPOSE_PROJECT only) ---"
+  "${COMPOSE[@]}" down -v >/dev/null 2>&1 || true
   [ "$CREATED_ENV" -eq 1 ] && rm -f .env || true
 }
 trap cleanup EXIT
+
+# Refuse to start while ANY ipcmc-* container exists (even stopped): the
+# stack uses fixed container names and host ports, so racing the owner's
+# live stack would fail mid-run at best -- and the guard is what makes the
+# -p isolation belt-and-braces instead of the only line of defence.
+preflight() {
+  local names
+  names="$("$DOCKER_BIN" ps -a --format '{{.Names}}' 2>/dev/null || true)"
+  if printf '%s
+' "$names" | grep -q '^ipcmc-'; then
+    echo "REFUSING to start: containers named ipcmc-* already exist (live or leftover stack)." >&2
+    echo "Nothing here was created or removed. Tear down or stop that stack first, or work in a" >&2
+    echo "quarantined environment -- this script will not share names or ports with it." >&2
+    exit 2
+  fi
+  echo "guard: clear -- no ipcmc-* containers present"
+}
+preflight
+if [ "$PREFLIGHT_ONLY" -eq 1 ]; then
+  trap - EXIT
+  exit 0
+fi
 
 if [ ! -f .env ]; then
   echo "ORTHANC_PASSWORD=$(openssl rand -hex 16)" > .env
@@ -40,8 +77,14 @@ grep -q '^GRADING_COORDINATOR_KEY=' .env || echo "GRADING_COORDINATOR_KEY=$(open
 # shellcheck disable=SC1091
 source .env
 
-echo "--- bring up the stack, load PUBLIC samples ---"
-docker compose up -d --wait --wait-timeout 300 >/dev/null
+echo "--- bring up the stack (project $COMPOSE_PROJECT), load PUBLIC samples ---"
+# compose declares kasm_default_network as external (the Kasm installer
+# normally creates it) -- stub it exactly like smoke-test.sh does. The
+# network is shared infrastructure: never deleted on teardown.
+if ! docker network inspect kasm_default_network >/dev/null 2>&1; then
+  docker network create kasm_default_network >/dev/null
+fi
+"${COMPOSE[@]}" up -d --wait --wait-timeout 300 >/dev/null
 ./scripts/fetch-public-samples.sh >/dev/null
 ./scripts/load-sample-studies.sh >/dev/null
 
